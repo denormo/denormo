@@ -120,6 +120,8 @@ createdBy: {
 }
 ```
 
+**Array relations.** `path` marks the array segment with `[]`, and `array` is `true`: `"path": "comments[].author"` puts a snapshot inside each `comments` element, `"path": "likedBy[]"` makes each element a snapshot. Exactly one `[]` is allowed; nested arrays are not supported.
+
 **Startup validation** fails fast when a target asks for a field the source does not expose, a path does not exist, the deployment is not a replica set (change streams require one), or the index on `<path>._id` is missing (warn, or create when `autoIndex` is on).
 
 **Reverse map.** The engine indexes relations by source field: `users.name → [posts.createdBy.name, posts.comments.$[c].author.name]`. A change event is matched against this map so only affected relations run.
@@ -286,6 +288,21 @@ await sync.stop();                   // graceful: finish current batch, release 
 import { createSyncEngine } from '@denormo/core';
 const engine = await createSyncEngine({ db, config });   // config = compiled object
 ```
+
+Pure building blocks exported by `@denormo/core` (Phase 0), shared by the stream runner and inline mode:
+
+```js
+import {
+  CONFIG_VERSION,            // 1
+  validateConfig,            // (config, { maxCascadeDepth }) => problems[]
+  assertValidConfig,         // throws DenormoConfigError listing every problem
+  buildReverseMap,           // config => source → field → [{ relation, field }]
+  planUpdates,               // (config, reverseMap, event) => [{ relationId, collection, filter, update, arrayFilters? }]
+  DenormoConfigError,
+} from '@denormo/core';
+```
+
+`planUpdates` takes a driver-agnostic event `{ op: 'update' | 'replace' | 'delete', source, srcId, version, changed, removed }`, where `version` is a BSON Timestamp and `changed`/`removed` use dot-notation paths.
 
 ## Roadmap
 

@@ -1,1 +1,25 @@
-export {};
+export {
+  CONFIG_VERSION,
+  type CompiledConfig,
+  type FieldMapping,
+  type OnDeletePolicy,
+  type RelationConfig,
+  type RelationMode,
+  type SourceConfig,
+} from './config/types.js';
+export {
+  assertValidConfig,
+  DEFAULT_MAX_CASCADE_DEPTH,
+  validateConfig,
+  type ConfigProblemCode,
+  type ValidateOptions,
+  type ValidationProblem,
+} from './config/validate.js';
+export { buildReverseMap, type ReverseMap, type ReverseMapEntry } from './config/reverse-map.js';
+export { planUpdates } from './planner/plan.js';
+export type { ChangeOperation, NormalizedChangeEvent, PlannedOperation } from './planner/types.js';
+export {
+  DenormoConfigError,
+  type ConfigProblem,
+  type DenormoConfigErrorOptions,
+} from './errors.js';
