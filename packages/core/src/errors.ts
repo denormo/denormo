@@ -3,6 +3,8 @@ export interface ConfigProblem {
   readonly code: string;
   readonly message: string;
   readonly relationId?: string;
+  /** The offending field path, when the problem is about one field. */
+  readonly field?: string;
 }
 
 export interface DenormoConfigErrorOptions {
