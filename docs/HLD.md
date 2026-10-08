@@ -136,8 +136,8 @@ One change stream per source collection feeds a planner that turns each relevant
 
 1. **Watch.** `db.collection('users').watch(pipeline, { fullDocument: 'updateLookup', resumeAfter })`, with a `$match` that keeps only `update`, `replace` and `delete` events touching exposed fields.
 2. **Filter.** For updates, intersect `updateDescription.updatedFields` and `removedFields` with the source's synced fields. No overlap means the event is acknowledged and skipped (for example a `lastLoginAt` change).
-3. **Plan.** Look up affected relations in the reverse map. For each, build one update: filter `{ '<path>._id': srcId, '<path>._v': { $not: { $gte: clusterTime } } }`, `$set` the changed synced fields plus `<path>._v`. The guard matches an older `_v` or none at all (`$lt` would never match a missing field).
-4. **Arrays.** For array paths, use `arrayFilters`: `$set: { 'comments.$[elem].author.name': v }` with `arrayFilters: [{ 'elem.author._id': srcId, 'elem.author._v': { $not: { $gte: clusterTime } } }]`.
+3. **Plan.** Look up affected relations in the reverse map. For each, build one update: filter `{ '<path>._id': srcId, '<path>._v': { $not: { $gt: clusterTime } } }`, `$set` the changed synced fields plus `<path>._v`. The guard matches a `_v` that is older or equal, or none at all (`$lte` would never match a missing field). Equal must match because every write in one transaction shares its commit `clusterTime`: the second update to a document in a transaction arrives with the `_v` the first one set.
+4. **Arrays.** For array paths, use `arrayFilters`: `$set: { 'comments.$[elem].author.name': v }` with `arrayFilters: [{ 'elem.author._id': srcId, 'elem.author._v': { $not: { $gt: clusterTime } } }]`.
 5. **Enqueue.** Write a job to the `_denormo_jobs` collection, then advance the resume token. The token only moves after the job is durably recorded.
 6. **Execute.** The fan-out executor runs the job in batches and marks it done.
 
@@ -145,8 +145,8 @@ One change stream per source collection feeds a planner that turns each relevant
 
 **Why this is correct**
 
-- **Out-of-order.** The guard only matches snapshots older than the event, so an older event can never overwrite a newer value. Updates have no value conditions, so a snapshot that already holds the new values still gets the newer `_v`; otherwise a value that returns to an earlier state (A → B → A) could be overwritten by a late B event.
-- **Idempotent.** Replaying an event matches zero documents the second time.
+- **Out-of-order.** The guard only matches snapshots no newer than the event, so an older event can never overwrite a newer value. Separate writes always have different cluster times; only writes in one transaction share one, and they arrive in order. Updates have no value conditions, so a snapshot that already holds the new values still gets the newer `_v`; otherwise a value that returns to an earlier state (A → B → A) could be overwritten by a late B event.
+- **Idempotent.** Replaying an event rewrites values that are already there, which MongoDB treats as a no-op: no write and no change event.
 - **Deletes.** A `delete` event applies `onDelete`: `markDeleted` sets `<path>.deleted: true`, `unset` removes the embed, `keep` does nothing.
 - **Replace events.** Treated as an update of every synced field, using `fullDocument`. Synced fields missing from the replacement are passed to the planner as `removed`, so their copies are unset rather than left stale.
 
@@ -161,7 +161,7 @@ Nested snapshots work by cascading: when a synced copy is itself a source for an
 **Safeguards**
 
 - **Cycle detection.** At startup the engine builds a graph of relations, linking A to B when a path A writes overlaps a field B syncs, and refuses configs with cycles. There is no opt-out: sync updates always advance `_v`, so they always write, and a cycle would loop.
-- **Termination.** Without cycles, every cascade ends after at most `maxCascadeDepth` levels. Replaying an event writes nothing, because the version guard no longer matches.
+- **Termination.** Without cycles, every cascade ends after at most `maxCascadeDepth` levels. Replaying an event writes nothing, because the values are already in place.
 - **Depth limit.** `maxCascadeDepth` (default 3) caps how far a change can travel; deeper chains fail validation.
 - **Latency.** Each level adds one round of stream processing. Reconcile processes relations in dependency order, upstream first.
 
