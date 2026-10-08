@@ -2,3 +2,5 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+  # Downloads mongod lazily on first use instead of at install time.
+  mongodb-memory-server: false
