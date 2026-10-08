@@ -176,12 +176,15 @@ function planDelete(relation: RelationConfig, event: NormalizedChangeEvent): Pla
 }
 
 /**
- * Version guard, with keys relative to the snapshot. There are deliberately no value conditions:
- * a snapshot that already holds the new values must still get the newer `_v`, or a late older
- * event could overwrite it later. Loops are prevented by rejecting cascade cycles in validation.
+ * Version guard, with keys relative to the snapshot: match snapshots older than this event.
+ * `$not: { $gte }` rather than `$lt` so a snapshot with no `_v` (written by the app or any other
+ * client) counts as older than every event; `$lt` never matches a missing field.
+ * There are deliberately no value conditions: a snapshot that already holds the new values must
+ * still get the newer `_v`, or a late older event could overwrite it later. Loops are prevented
+ * by rejecting cascade cycles in validation.
  */
 function guard(event: NormalizedChangeEvent): Document {
-  return { _id: event.srcId, _v: { $lt: event.version } };
+  return { _id: event.srcId, _v: { $not: { $gte: event.version } } };
 }
 
 /** Renders snapshot-relative paths and conditions for a relation's flat or array location. */
