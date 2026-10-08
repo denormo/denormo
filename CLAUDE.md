@@ -27,7 +27,7 @@ docs/
 1. **`packages/core` must never import `mongoose`.** Enforced by an ESLint `no-restricted-imports` rule. Core speaks in collection names and field paths, never model names.
 2. **The compiled config is the public contract.** Its types live in `packages/core/src/config/types.ts`. Changing them is a breaking change; ask first.
 3. **The planner is pure.** `packages/core/src/planner` takes config + a normalized change event and returns update operations. No I/O, no driver calls, no clocks. This keeps correctness logic fully unit-testable.
-4. **Every sync update carries the version guard** (`<path>._v: { $lt: version }`) and the no-op filter (`$ne` on at least one changed value). Never emit an unguarded update.
+4. **Every sync update carries the version guard** (`<path>._v: { $lt: version }`) and no value conditions such as `$ne`, so `_v` always advances (a skipped snapshot would let a late older event win). Loops are prevented by rejecting cascade cycles in validation. Never emit an unguarded update.
 5. **Versions are BSON Timestamps** from change-event `clusterTime` (stream mode) or `session.operationTime` (inline mode). Never use `Date` or wall-clock time for ordering.
 6. **Test-first for core logic.** Write or update the failing test before the implementation.
 7. **Don't build ahead of the roadmap.** Work only on the phase requested. If something from a later phase seems necessary, stop and explain why.

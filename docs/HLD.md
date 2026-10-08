@@ -126,7 +126,7 @@ createdBy: {
 
 **Reverse map.** The engine indexes relations by source field: `users.name → [posts.createdBy.name, posts.comments.$[c].author.name]`. A change event is matched against this map so only affected relations run.
 
-**Embedded shape.** Every snapshot stores `_id`, the copied fields, and `_v` (the source version it reflects, a BSON Timestamp). `_v` drives ordering, idempotency and read-repair.
+**Embedded shape.** Every snapshot stores `_id`, the copied fields, and `_v` (the source version it reflects, a BSON Timestamp). `_v` drives ordering, idempotency and read-repair. Snapshots written by the application at insert must carry a `_v` too: the guard's `$lt` never matches a missing field, so a snapshot without `_v` would never sync. The adapter sets it (Phase 1). Which value to use is open: `Timestamp(0, 0)` lets an older in-flight event overwrite a fresh copy, while the insert's `operationTime` can skip events between the app's read and its insert (the known race below).
 
 ## Sync engine
 
@@ -143,10 +143,10 @@ One change stream per source collection feeds a planner that turns each relevant
 
 **Why this is correct**
 
-- **Out-of-order.** `$lt: clusterTime` means an older event can never overwrite a newer value.
+- **Out-of-order.** `$lt: clusterTime` means an older event can never overwrite a newer value. Updates have no value conditions, so a snapshot that already holds the new values still gets the newer `_v`; otherwise a value that returns to an earlier state (A → B → A) could be overwritten by a late B event.
 - **Idempotent.** Replaying an event matches zero documents the second time.
 - **Deletes.** A `delete` event applies `onDelete`: `markDeleted` sets `<path>.deleted: true`, `unset` removes the embed, `keep` does nothing.
-- **Replace events.** Treated as an update of every synced field, using `fullDocument`.
+- **Replace events.** Treated as an update of every synced field, using `fullDocument`. Synced fields missing from the replacement are passed to the planner as `removed`, so their copies are unset rather than left stale.
 
 **Known race.** An app reads a user, the user is renamed and synced, then the app inserts a post with the old name. That post was not in scope when the event ran. Mitigations: an optional target-insert watcher that verifies fresh snapshots, plus periodic reconcile.
 
@@ -158,8 +158,8 @@ Nested snapshots work by cascading: when a synced copy is itself a source for an
 
 **Safeguards**
 
-- **Cycle detection.** At startup the engine builds a graph of source → target relations and refuses configs with cycles unless explicitly allowed.
-- **No-op filter.** Every sync update adds a `$ne` condition on the new value, so a write that changes nothing emits no event and cannot loop.
+- **Cycle detection.** At startup the engine builds a graph of relations, linking A to B when a path A writes overlaps a field B syncs, and refuses configs with cycles. There is no opt-out: sync updates always advance `_v`, so they always write, and a cycle would loop.
+- **Termination.** Without cycles, every cascade ends after at most `maxCascadeDepth` levels. Replaying an event writes nothing, because the version guard no longer matches.
 - **Depth limit.** `maxCascadeDepth` (default 3) caps how far a change can travel; deeper chains fail validation.
 - **Latency.** Each level adds one round of stream processing. Reconcile processes relations in dependency order, upstream first.
 
