@@ -53,3 +53,18 @@ export function childPath(ancestor: string, path: string): string | null {
 export function joinPath(...parts: string[]): string {
   return parts.filter((part) => part.length > 0).join('.');
 }
+
+export type PathLookup =
+  { readonly exists: true; readonly value: unknown } | { readonly exists: false };
+
+/** Reads a dot-notation path from a value; `exists: false` when any segment is missing. */
+export function getPath(value: unknown, path: string): PathLookup {
+  let current = value;
+  for (const segment of path === '' ? [] : path.split('.')) {
+    if (typeof current !== 'object' || current === null || !Object.hasOwn(current, segment)) {
+      return { exists: false };
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return { exists: true, value: current };
+}

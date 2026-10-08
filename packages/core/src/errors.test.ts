@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DenormoConfigError } from './errors.js';
+import { DenormoConfigError, DenormoRuntimeError } from './errors.js';
 
 describe('DenormoConfigError', () => {
   it('carries a code, the relation id and the problems', () => {
@@ -26,5 +26,23 @@ describe('DenormoConfigError', () => {
       problems: [],
     });
     expect(error.relationId).toBeUndefined();
+  });
+});
+
+describe('DenormoRuntimeError', () => {
+  it('carries a code, the source collection and the cause', () => {
+    const cause = new Error('write failed');
+    const error = new DenormoRuntimeError('sync stopped', {
+      code: 'SOURCE_STOPPED',
+      source: 'users',
+      cause,
+    });
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('DenormoRuntimeError');
+    expect(error.code).toBe('SOURCE_STOPPED');
+    expect(error.source).toBe('users');
+    expect(error.relationId).toBeUndefined();
+    expect(error.cause).toBe(cause);
   });
 });

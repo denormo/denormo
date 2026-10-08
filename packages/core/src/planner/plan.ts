@@ -1,5 +1,11 @@
 import type { Document } from 'mongodb';
-import { childPath, joinPath, parseSnapshotPath, type SnapshotLocation } from '../config/paths.js';
+import {
+  childPath,
+  getPath,
+  joinPath,
+  parseSnapshotPath,
+  type SnapshotLocation,
+} from '../config/paths.js';
 import type { ReverseMap } from '../config/reverse-map.js';
 import type { CompiledConfig, RelationConfig } from '../config/types.js';
 import { DenormoConfigError } from '../errors.js';
@@ -74,7 +80,7 @@ function sourceFieldChanges(from: string, event: NormalizedChangeEvent) {
   for (const [path, value] of Object.entries(event.changed)) {
     const within = childPath(path, from);
     if (within !== null) {
-      const found = lookup(value, within);
+      const found = getPath(value, within);
       if (found.exists) set.push(['', found.value]);
       else unset.push('');
       continue;
@@ -93,20 +99,6 @@ function sourceFieldChanges(from: string, event: NormalizedChangeEvent) {
   }
 
   return { set, unset };
-}
-
-function lookup(
-  value: unknown,
-  path: string,
-): { exists: true; value: unknown } | { exists: false } {
-  let current = value;
-  for (const segment of path === '' ? [] : path.split('.')) {
-    if (typeof current !== 'object' || current === null || !Object.hasOwn(current, segment)) {
-      return { exists: false };
-    }
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return { exists: true, value: current };
 }
 
 function planSync(
