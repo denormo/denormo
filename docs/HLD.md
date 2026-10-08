@@ -126,7 +126,7 @@ createdBy: {
 
 **Reverse map.** The engine indexes relations by source field: `users.name → [posts.createdBy.name, posts.comments.$[c].author.name]`. A change event is matched against this map so only affected relations run.
 
-**Embedded shape.** Every snapshot stores `_id`, the copied fields, and `_v` (the source version it reflects, a BSON Timestamp). `_v` drives ordering, idempotency and read-repair. Snapshots written by the application at insert must carry a `_v` too: the guard's `$lt` never matches a missing field, so a snapshot without `_v` would never sync. The adapter sets it (Phase 1). Which value to use is open: `Timestamp(0, 0)` lets an older in-flight event overwrite a fresh copy, while the insert's `operationTime` can skip events between the app's read and its insert (the known race below).
+**Embedded shape.** Every snapshot stores `_id`, the copied fields, and `_v` (the source version it reflects, a BSON Timestamp). `_v` drives ordering, idempotency and read-repair. Applications create snapshots without `_v` (plain `{ _id, name }`), whatever client writes them. A missing `_v` counts as older than every event, so the first sync fills it in; nothing needs to stamp it.
 
 ## Sync engine
 
@@ -136,19 +136,19 @@ One change stream per source collection feeds a planner that turns each relevant
 
 1. **Watch.** `db.collection('users').watch(pipeline, { fullDocument: 'updateLookup', resumeAfter })`, with a `$match` that keeps only `update`, `replace` and `delete` events touching exposed fields.
 2. **Filter.** For updates, intersect `updateDescription.updatedFields` and `removedFields` with the source's synced fields. No overlap means the event is acknowledged and skipped (for example a `lastLoginAt` change).
-3. **Plan.** Look up affected relations in the reverse map. For each, build one update: filter `{ '<path>._id': srcId, '<path>._v': { $lt: clusterTime } }`, `$set` the changed synced fields plus `<path>._v`.
-4. **Arrays.** For array paths, use `arrayFilters`: `$set: { 'comments.$[c].author.name': v }` with `arrayFilters: [{ 'c.author._id': srcId, 'c.author._v': { $lt: clusterTime } }]`.
+3. **Plan.** Look up affected relations in the reverse map. For each, build one update: filter `{ '<path>._id': srcId, '<path>._v': { $not: { $gte: clusterTime } } }`, `$set` the changed synced fields plus `<path>._v`. The guard matches an older `_v` or none at all (`$lt` would never match a missing field).
+4. **Arrays.** For array paths, use `arrayFilters`: `$set: { 'comments.$[elem].author.name': v }` with `arrayFilters: [{ 'elem.author._id': srcId, 'elem.author._v': { $not: { $gte: clusterTime } } }]`.
 5. **Enqueue.** Write a job to the `_denormo_jobs` collection, then advance the resume token. The token only moves after the job is durably recorded.
 6. **Execute.** The fan-out executor runs the job in batches and marks it done.
 
 **Why this is correct**
 
-- **Out-of-order.** `$lt: clusterTime` means an older event can never overwrite a newer value. Updates have no value conditions, so a snapshot that already holds the new values still gets the newer `_v`; otherwise a value that returns to an earlier state (A → B → A) could be overwritten by a late B event.
+- **Out-of-order.** The guard only matches snapshots older than the event, so an older event can never overwrite a newer value. Updates have no value conditions, so a snapshot that already holds the new values still gets the newer `_v`; otherwise a value that returns to an earlier state (A → B → A) could be overwritten by a late B event.
 - **Idempotent.** Replaying an event matches zero documents the second time.
 - **Deletes.** A `delete` event applies `onDelete`: `markDeleted` sets `<path>.deleted: true`, `unset` removes the embed, `keep` does nothing.
 - **Replace events.** Treated as an update of every synced field, using `fullDocument`. Synced fields missing from the replacement are passed to the planner as `removed`, so their copies are unset rather than left stale.
 
-**Known race.** An app reads a user, the user is renamed and synced, then the app inserts a post with the old name. That post was not in scope when the event ran. Mitigations: an optional target-insert watcher that verifies fresh snapshots, plus periodic reconcile.
+**Known race.** An app reads a user, the user is renamed and synced, then the app inserts a post with the old name. That post was not in scope when the event ran. Mitigations: an optional target-insert watcher that verifies fresh snapshots, plus periodic reconcile. Both re-read the source and apply the same guarded update, stamping `_v` with the cluster time of that read.
 
 ## Nested snapshots
 
@@ -202,7 +202,7 @@ Large jobs are split into `_id`-ordered batches so one popular source document c
 
 **Throttle policy:** fixed `maxDocsPerSecond` per worker; adaptive back-off on batch latency or replication lag; priority so small jobs jump ahead of large ones.
 
-**Coalescing.** If a newer event for the same source document and relation arrives while a job is queued, the jobs merge using the latest values and `clusterTime`.
+**Coalescing.** If a newer event for the same source document and relation arrives while a job is queued, the jobs merge using the latest values and `clusterTime`. Jobs for one source document and relation never run out of order: once a newer job has completed, an older one is dropped instead of retried. The guard alone is not enough here, because a snapshot inserted without `_v` after the newer job ran would accept the older values.
 
 **Write concern.** Batches default to `w: 'majority'`.
 
