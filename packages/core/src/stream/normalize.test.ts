@@ -102,6 +102,56 @@ describe('normalizeChangeEvent', () => {
     expect(deleted?.changed).toEqual({});
   });
 
+  describe('array element updates inside a synced field', () => {
+    it('copies the whole synced array instead of writing by index ($push)', () => {
+      const event = normalizeChangeEvent(
+        change({
+          operationType: 'update',
+          updateDescription: { updatedFields: { 'tags.3': 'd' }, removedFields: [] },
+          fullDocument: { _id: ada, tags: ['a', 'b', 'c', 'd'] },
+        }),
+        SYNCED,
+      );
+      expect(event?.changed).toEqual({ tags: ['a', 'b', 'c', 'd'] });
+    });
+
+    it('copies the whole synced object when an array inside it changes by index', () => {
+      const event = normalizeChangeEvent(
+        change({
+          operationType: 'update',
+          updateDescription: { updatedFields: { 'address.lines.2': 'Flat 4' }, removedFields: [] },
+          fullDocument: { _id: ada, address: { zip: '0150', lines: ['a', 'b', 'Flat 4'] } },
+        }),
+        ['address'],
+      );
+      expect(event?.changed).toEqual({ address: { zip: '0150', lines: ['a', 'b', 'Flat 4'] } });
+    });
+
+    it('keeps non-index paths inside a synced field as they are', () => {
+      const event = normalizeChangeEvent(
+        change({
+          operationType: 'update',
+          updateDescription: { updatedFields: { 'address.zip': '0151' }, removedFields: [] },
+          fullDocument: { _id: ada, address: { zip: '0151' } },
+        }),
+        ['address'],
+      );
+      expect(event?.changed).toEqual({ 'address.zip': '0151' });
+    });
+
+    it('drops the index path when the document is gone', () => {
+      const event = normalizeChangeEvent(
+        change({
+          operationType: 'update',
+          updateDescription: { updatedFields: { 'tags.3': 'd' }, removedFields: [] },
+          fullDocument: null,
+        }),
+        SYNCED,
+      );
+      expect(event?.changed).toEqual({});
+    });
+  });
+
   it.each(['insert', 'delete', 'drop', 'invalidate'])('skips %s events', (operationType) => {
     expect(normalizeChangeEvent(change({ operationType }), SYNCED)).toBeNull();
   });
