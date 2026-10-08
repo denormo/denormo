@@ -1,15 +1,21 @@
-import type { Db, ResumeToken } from 'mongodb';
+import type { Db, ResumeToken, Timestamp } from 'mongodb';
+
+/** Where a source's change stream continues from. */
+export type StreamPosition =
+  | { readonly resumeAfter: ResumeToken }
+  /** Saved on a source's first start, so a restart before any event resumes from that point. */
+  | { readonly startAtOperationTime: Timestamp };
 
 /** Stored change-stream position per source collection (`_denormo_cursors`). */
 export interface CursorStore {
-  /** Resolves to `undefined` when the source has no stored position. */
-  load(source: string): Promise<ResumeToken>;
-  save(source: string, resumeToken: ResumeToken): Promise<void>;
+  load(source: string): Promise<StreamPosition | undefined>;
+  save(source: string, position: StreamPosition): Promise<void>;
 }
 
 interface CursorDocument {
   _id: string;
-  resumeToken: ResumeToken;
+  resumeToken?: ResumeToken;
+  startAtOperationTime?: Timestamp;
   /** For observability only; ordering never uses wall-clock time. */
   updatedAt: Date;
 }
@@ -19,14 +25,26 @@ export function createCursorStore(db: Db, prefix: string): CursorStore {
   return {
     async load(source) {
       const cursor = await cursors.findOne({ _id: source });
-      return cursor?.resumeToken;
+      if (cursor?.resumeToken !== undefined) return { resumeAfter: cursor.resumeToken };
+      if (cursor?.startAtOperationTime)
+        return { startAtOperationTime: cursor.startAtOperationTime };
+      return undefined;
     },
-    async save(source, resumeToken) {
-      await cursors.updateOne(
-        { _id: source },
-        { $set: { resumeToken, updatedAt: new Date() } },
-        { upsert: true, writeConcern: { w: 'majority' } },
-      );
+    async save(source, position) {
+      const update =
+        'resumeAfter' in position
+          ? {
+              $set: { resumeToken: position.resumeAfter, updatedAt: new Date() },
+              $unset: { startAtOperationTime: '' as const },
+            }
+          : {
+              $set: { startAtOperationTime: position.startAtOperationTime, updatedAt: new Date() },
+              $unset: { resumeToken: '' as const },
+            };
+      await cursors.updateOne({ _id: source }, update, {
+        upsert: true,
+        writeConcern: { w: 'majority' },
+      });
     },
   };
 }

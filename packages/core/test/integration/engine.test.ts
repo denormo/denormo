@@ -49,6 +49,24 @@ async function currentToken(): Promise<unknown> {
   return (await cursors().findOne({ _id: 'users' }))?.resumeToken;
 }
 
+/** Waits for the engine's first saved resume token (it saves one while the source is quiet). */
+async function firstSavedToken(): Promise<unknown> {
+  await waitFor(async () => (await currentToken()) !== undefined);
+  return currentToken();
+}
+
+async function forbidName(name: string) {
+  await ctx.db.command({
+    collMod: 'posts',
+    validator: { 'createdBy.name': { $ne: name } },
+    validationAction: 'error',
+  });
+}
+
+async function allowAllNames() {
+  await ctx.db.command({ collMod: 'posts', validator: {}, validationLevel: 'off' });
+}
+
 beforeEach(async () => {
   await users().insertOne({
     _id: ada,
@@ -90,9 +108,10 @@ describe('createSyncEngine', () => {
 
   it('writes nothing for an unsynced field change but still advances the resume token', async () => {
     await startEngine();
+    const quiet = await firstSavedToken();
     await users().updateOne({ _id: ada }, { $set: { lastLoginAt: 1 } });
 
-    await tokenAdvancedFrom(undefined);
+    await tokenAdvancedFrom(quiet);
     expect(await postSnapshot()).toEqual({ _id: ada, name: 'Ada', photo: 'a.png', role: 'admin' });
   });
 
@@ -131,21 +150,19 @@ describe('createSyncEngine', () => {
   it('starts from the current cluster time on first start, without replaying older changes', async () => {
     await users().updateOne({ _id: ada }, { $set: { name: 'Before any engine' } });
     await startEngine();
+    const quiet = await firstSavedToken();
     await users().updateOne({ _id: ada }, { $set: { lastLoginAt: 2 } });
 
-    await tokenAdvancedFrom(undefined);
+    await tokenAdvancedFrom(quiet);
     expect((await postSnapshot())?.name).toBe('Ada');
   });
 
   it('reports a failed target write, keeps the token, and replays the event after restart', async () => {
-    await ctx.db.command({
-      collMod: 'posts',
-      validator: { 'createdBy.name': { $ne: 'Forbidden' } },
-      validationAction: 'error',
-    });
+    await forbidName('Forbidden');
     const first = await startEngine();
+    const quiet = await firstSavedToken();
     await users().updateOne({ _id: ada }, { $set: { lastLoginAt: 3 } });
-    await tokenAdvancedFrom(undefined);
+    await tokenAdvancedFrom(quiet);
     const beforeFailure = await currentToken();
 
     await users().updateOne({ _id: ada }, { $set: { name: 'Forbidden' } });
@@ -155,9 +172,83 @@ describe('createSyncEngine', () => {
     expect(await currentToken()).toEqual(beforeFailure);
     await first.engine.stop();
 
-    await ctx.db.command({ collMod: 'posts', validator: {}, validationLevel: 'off' });
+    await allowAllNames();
     await startEngine();
     await waitFor(async () => (await postSnapshot())?.name === 'Forbidden');
+  });
+
+  it('keeps its start position when stopped before any event', async () => {
+    const first = await startEngine();
+    await first.engine.stop();
+    await users().updateOne({ _id: ada }, { $set: { name: 'While stopped' } });
+
+    await startEngine();
+    await waitFor(async () => (await postSnapshot())?.name === 'While stopped');
+  });
+
+  it('replays a failed first event after a restart', async () => {
+    await forbidName('Forbidden');
+    const first = await startEngine();
+    await users().updateOne({ _id: ada }, { $set: { name: 'Forbidden' } });
+    await waitFor(() => Promise.resolve(first.errors.length > 0));
+    await first.engine.stop();
+
+    await allowAllNames();
+    await startEngine();
+    await waitFor(async () => (await postSnapshot())?.name === 'Forbidden');
+  });
+
+  it('saves its position while the source is quiet', async () => {
+    await startEngine();
+    expect(await firstSavedToken()).toEqual(expect.anything());
+  });
+
+  it('restarts a failed source when start() is called again on the same engine', async () => {
+    await forbidName('Forbidden');
+    const { engine, errors } = await startEngine();
+    await users().updateOne({ _id: ada }, { $set: { name: 'Forbidden' } });
+    await waitFor(() => Promise.resolve(errors.length > 0));
+
+    await allowAllNames();
+    await engine.start();
+    await waitFor(async () => (await postSnapshot())?.name === 'Forbidden');
+  });
+
+  it('can be started again on the same engine after stop()', async () => {
+    const { engine } = await startEngine();
+    await engine.stop();
+    await users().updateOne({ _id: ada }, { $set: { name: 'Restarted' } });
+
+    await engine.start();
+    await waitFor(async () => (await postSnapshot())?.name === 'Restarted');
+  });
+
+  it('lets stop() win over a pending start(), leaving the engine startable', async () => {
+    const engine = await createSyncEngine({
+      db: ctx.db,
+      config: usersPostsConfig(),
+      onWarning: () => undefined,
+    });
+    engines.push(engine);
+    const starting = engine.start();
+    await engine.stop();
+    await starting;
+
+    await expect(engine.start()).resolves.toBeUndefined();
+  });
+
+  it('opens each source once when start() is called concurrently', async () => {
+    const engine = await createSyncEngine({
+      db: ctx.db,
+      config: usersPostsConfig(),
+      onWarning: () => undefined,
+    });
+    engines.push(engine);
+    const results = await Promise.allSettled([engine.start(), engine.start()]);
+
+    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected?.reason).toMatchObject({ code: 'ALREADY_STARTED' });
   });
 
   it('stops cleanly while an event is in flight', async () => {
