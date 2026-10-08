@@ -3,3 +3,6 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+# Local agent tooling (Kilo Code worktrees)
+.kilo/
