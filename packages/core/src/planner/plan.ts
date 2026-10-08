@@ -168,15 +168,19 @@ function planDelete(relation: RelationConfig, event: NormalizedChangeEvent): Pla
 }
 
 /**
- * Version guard, with keys relative to the snapshot: match snapshots older than this event.
- * `$not: { $gte }` rather than `$lt` so a snapshot with no `_v` (written by the app or any other
- * client) counts as older than every event; `$lt` never matches a missing field.
- * There are deliberately no value conditions: a snapshot that already holds the new values must
- * still get the newer `_v`, or a late older event could overwrite it later. Loops are prevented
- * by rejecting cascade cycles in validation.
+ * Version guard, with keys relative to the snapshot: match snapshots no newer than this event.
+ * - `$not: { $gt }` matches `_v <= version` and a missing `_v` (snapshots written by the app or any
+ *   other client count as oldest); `$lte` would never match a missing field.
+ * - Equal versions must match: every write in one transaction shares its commit clusterTime, so
+ *   the second update to a document in a transaction arrives with the `_v` the first one set.
+ *   Replaying an event rewrites identical values, which MongoDB treats as a no-op (no write, no
+ *   change event, so nothing cascades).
+ * - There are deliberately no value conditions: a snapshot that already holds the new values must
+ *   still get the newer `_v`, or a late older event could overwrite it later. Loops are prevented
+ *   by rejecting cascade cycles in validation.
  */
 function guard(event: NormalizedChangeEvent): Document {
-  return { _id: event.srcId, _v: { $not: { $gte: event.version } } };
+  return { _id: event.srcId, _v: { $not: { $gt: event.version } } };
 }
 
 /** Renders snapshot-relative paths and conditions for a relation's flat or array location. */
