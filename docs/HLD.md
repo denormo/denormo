@@ -141,6 +141,8 @@ One change stream per source collection feeds a planner that turns each relevant
 5. **Enqueue.** Write a job to the `_denormo_jobs` collection, then advance the resume token. The token only moves after the job is durably recorded.
 6. **Execute.** The fan-out executor runs the job in batches and marks it done.
 
+**Phase 1 runner.** Until the job queue lands with batching in Phase 2, the runner executes the planned updates directly (step 6 without step 5) and saves the resume token afterwards. A crash in between replays the event, which the version guard makes harmless. A failed write stops that source's stream without advancing its token and reports `SOURCE_STOPPED`; the next `start()` replays it. On first start without a token the stream begins just after the current cluster time. Delete events are wired in Phase 4.
+
 **Why this is correct**
 
 - **Out-of-order.** The guard only matches snapshots older than the event, so an older event can never overwrite a newer value. Updates have no value conditions, so a snapshot that already holds the new values still gets the newer `_v`; otherwise a value that returns to an earlier state (A → B → A) could be overwritten by a late B event.
@@ -212,7 +214,7 @@ All engine state lives in MongoDB in internal collections (prefix configurable).
 
 | Collection | Holds | Key fields |
 | --- | --- | --- |
-| `_denormo_cursors` | One resume token per watched source | `source`, `resumeToken`, `updatedAt`, `ownerId` |
+| `_denormo_cursors` | One resume token per watched source | `_id` (source), `resumeToken`, `updatedAt`, `ownerId` (Phase 2) |
 | `_denormo_jobs` | Planned fan-out jobs and their progress | `relationId`, `srcId`, `values`, `clusterTime`, `status`, `lastId`, `attempts`, `error` |
 | `_denormo_locks` | Leases for stream ownership and job claims | `name`, `ownerId`, `expiresAt` (TTL index) |
 | `_denormo_versions` | Latest source versions for read-repair relations | `srcId`, `source`, `clusterTime`, `values` |
@@ -286,7 +288,16 @@ await sync.stop();                   // graceful: finish current batch, release 
 
 ```js
 import { createSyncEngine } from '@denormo/core';
-const engine = await createSyncEngine({ db, config });   // config = compiled object
+const engine = await createSyncEngine({
+  db,                                // a connected mongodb Db
+  config,                            // compiled config; validated here
+  autoIndex: false,                  // create missing <path>._id indexes instead of warning
+  statePrefix: '_denormo_',          // prefix of the engine's own collections
+  onError: (error) => {},            // a source's stream stopped (DenormoRuntimeError, code SOURCE_STOPPED)
+  onWarning: (message) => {},        // e.g. a missing index
+});
+await engine.start();                // one change stream per source; resolves once positioned
+await engine.stop();                 // finishes the event in flight, then closes the streams
 ```
 
 Pure building blocks exported by `@denormo/core` (Phase 0), shared by the stream runner and inline mode:

@@ -20,6 +20,14 @@ export { planUpdates } from './planner/plan.js';
 export type { ChangeOperation, NormalizedChangeEvent, PlannedOperation } from './planner/types.js';
 export {
   DenormoConfigError,
+  DenormoRuntimeError,
   type ConfigProblem,
   type DenormoConfigErrorOptions,
+  type DenormoRuntimeErrorOptions,
 } from './errors.js';
+export {
+  createSyncEngine,
+  DEFAULT_STATE_PREFIX,
+  type SyncEngine,
+  type SyncEngineOptions,
+} from './engine/engine.js';
