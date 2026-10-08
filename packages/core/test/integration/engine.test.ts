@@ -133,6 +133,22 @@ describe('createSyncEngine', () => {
     expect(snapshot?.role).toBe('admin');
   });
 
+  it('applies every update a transaction makes to one source document', async () => {
+    await startEngine();
+    const session = ctx.client.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await users().updateOne({ _id: ada }, { $set: { name: 'Ada L.' } }, { session });
+        await users().updateOne({ _id: ada }, { $set: { avatar: 'b.png' } }, { session });
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    await waitFor(async () => (await postSnapshot())?.photo === 'b.png');
+    expect((await postSnapshot())?.name).toBe('Ada L.');
+  });
+
   it('resumes after a restart from the saved resume token', async () => {
     const first = await startEngine();
     await users().updateOne({ _id: ada }, { $set: { name: 'First' } });
