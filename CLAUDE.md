@@ -18,7 +18,7 @@ docs/
 - Node.js 22+, TypeScript (strict), ESM with CJS builds via `tsup`
 - pnpm workspaces
 - Vitest for tests
-- `mongodb` driver (current major) in core; `mongoose` as a peer dependency (`^8 || ^9`) in the adapter only
+- `mongodb` as a peer dependency of core (`^6.20 || ^7`, the drivers mongoose 8 and 9 ship, so apps keep one driver copy); `mongoose` as a peer dependency (`^8 || ^9`) in the adapter only
 - `mongodb-memory-server` in replica-set mode for integration tests (change streams need a replica set)
 - ESLint + Prettier; Changesets for versioning
 

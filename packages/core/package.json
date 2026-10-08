@@ -31,7 +31,10 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "mongodb": "^6.20.0 || ^7.0.0"
+  },
+  "devDependencies": {
     "mongodb": "^7.7.0"
   }
 }
