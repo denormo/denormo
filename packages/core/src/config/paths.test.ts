@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { childPath, parseSnapshotPath, pathsOverlap } from './paths.js';
+import { childPath, getPath, parseSnapshotPath, pathsOverlap } from './paths.js';
 
 describe('parseSnapshotPath', () => {
   it('parses a flat path', () => {
@@ -63,5 +63,25 @@ describe('childPath', () => {
   it('returns null when the path is not inside the ancestor', () => {
     expect(childPath('profile', 'profiles.city')).toBeNull();
     expect(childPath('profile.city', 'profile')).toBeNull();
+  });
+});
+
+describe('getPath', () => {
+  const doc = { name: 'Ada', profile: { city: 'Oslo', zip: null }, tags: ['a', 'b'] };
+
+  it('returns the value at a dot-notation path', () => {
+    expect(getPath(doc, 'profile.city')).toEqual({ exists: true, value: 'Oslo' });
+    expect(getPath(doc, 'tags.1')).toEqual({ exists: true, value: 'b' });
+  });
+
+  it('returns the whole value for an empty path', () => {
+    expect(getPath(doc, '')).toEqual({ exists: true, value: doc });
+  });
+
+  it('distinguishes a null value from a missing field', () => {
+    expect(getPath(doc, 'profile.zip')).toEqual({ exists: true, value: null });
+    expect(getPath(doc, 'profile.street')).toEqual({ exists: false });
+    expect(getPath(doc, 'name.first')).toEqual({ exists: false });
+    expect(getPath(undefined, 'name')).toEqual({ exists: false });
   });
 });

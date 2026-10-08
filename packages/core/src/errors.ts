@@ -27,3 +27,26 @@ export class DenormoConfigError extends Error {
     this.problems = options.problems;
   }
 }
+
+export interface DenormoRuntimeErrorOptions {
+  readonly code: string;
+  readonly relationId?: string;
+  /** Source collection the error concerns, when there is one. */
+  readonly source?: string;
+  readonly cause?: unknown;
+}
+
+/** Thrown or reported by the running engine (streams, writes, startup checks). */
+export class DenormoRuntimeError extends Error {
+  override readonly name = 'DenormoRuntimeError';
+  readonly code: string;
+  readonly relationId: string | undefined;
+  readonly source: string | undefined;
+
+  constructor(message: string, options: DenormoRuntimeErrorOptions) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.code = options.code;
+    this.relationId = options.relationId;
+    this.source = options.source;
+  }
+}
