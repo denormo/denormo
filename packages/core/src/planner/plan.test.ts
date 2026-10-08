@@ -48,11 +48,16 @@ function updatedPaths(op: PlannedOperation): string[] {
   return Object.values(op.update).flatMap((fields) => Object.keys(fields as object));
 }
 
-/** Hard rule 4: every planned update carries the version guard; never positional `$`. */
+/**
+ * Hard rule 4: every planned update carries the version guard and nothing that could skip a stale
+ * snapshot (value conditions would leave `_v` behind); never positional `$`.
+ */
 function expectGuarded(op: PlannedOperation) {
   const conditions = JSON.stringify([op.filter, op.arrayFilters ?? []]);
   expect(conditions).toMatch(/_v":\{"\$lt"/);
-  expect(conditions).not.toContain('$lte');
+  for (const operator of ['$lte', '$ne', '$or', '$exists']) {
+    expect(conditions).not.toContain(`"${operator}"`);
+  }
   for (const path of updatedPaths(op)) expect(path.split('.')).not.toContain('$');
 }
 
@@ -78,7 +83,7 @@ describe('planUpdates', () => {
   });
 
   describe('flat paths', () => {
-    it('sets the changed field and _v behind the version guard and no-op filter', () => {
+    it('sets the changed field and _v behind the version guard', () => {
       expect(planFor(event({ changed: { name: 'Ada' } }), postsCreatedBy)).toEqual([
         {
           relationId: 'posts.createdBy',
@@ -86,7 +91,6 @@ describe('planUpdates', () => {
           filter: {
             'createdBy._id': userId,
             'createdBy._v': { $lt: T1 },
-            'createdBy.name': { $ne: 'Ada' },
           },
           update: { $set: { 'createdBy.name': 'Ada', 'createdBy._v': T1 } },
         },
@@ -96,18 +100,13 @@ describe('planUpdates', () => {
     it('writes renamed fields to their target name', () => {
       const op = only(planFor(event({ changed: { avatar: 'a.png' } }), postsCreatedBy));
       expect(op.update).toEqual({ $set: { 'createdBy.photo': 'a.png', 'createdBy._v': T1 } });
-      expect(op.filter).toMatchObject({ 'createdBy.photo': { $ne: 'a.png' } });
     });
 
-    it('matches documents where any changed value differs', () => {
+    it('sets every changed field in one update', () => {
       const op = only(
         planFor(event({ changed: { name: 'Ada', avatar: 'a.png' } }), postsCreatedBy),
       );
-      expect(op.filter).toEqual({
-        'createdBy._id': userId,
-        'createdBy._v': { $lt: T1 },
-        $or: [{ 'createdBy.name': { $ne: 'Ada' } }, { 'createdBy.photo': { $ne: 'a.png' } }],
-      });
+      expect(op.filter).toEqual({ 'createdBy._id': userId, 'createdBy._v': { $lt: T1 } });
       expect(op.update).toEqual({
         $set: { 'createdBy.name': 'Ada', 'createdBy.photo': 'a.png', 'createdBy._v': T1 },
       });
@@ -115,11 +114,7 @@ describe('planUpdates', () => {
 
     it('unsets the target field when a synced source field is removed', () => {
       const op = only(planFor(event({ removed: ['avatar'] }), postsCreatedBy));
-      expect(op.filter).toEqual({
-        'createdBy._id': userId,
-        'createdBy._v': { $lt: T1 },
-        'createdBy.photo': { $exists: true },
-      });
+      expect(op.filter).toEqual({ 'createdBy._id': userId, 'createdBy._v': { $lt: T1 } });
       expect(op.update).toEqual({
         $set: { 'createdBy._v': T1 },
         $unset: { 'createdBy.photo': '' },
@@ -130,10 +125,6 @@ describe('planUpdates', () => {
       const op = only(
         planFor(event({ changed: { name: 'Ada' }, removed: ['avatar'] }), postsCreatedBy),
       );
-      expect(op.filter.$or).toEqual([
-        { 'createdBy.name': { $ne: 'Ada' } },
-        { 'createdBy.photo': { $exists: true } },
-      ]);
       expect(op.update).toEqual({
         $set: { 'createdBy.name': 'Ada', 'createdBy._v': T1 },
         $unset: { 'createdBy.photo': '' },
@@ -182,7 +173,6 @@ describe('planUpdates', () => {
               $elemMatch: {
                 'author._id': userId,
                 'author._v': { $lt: T1 },
-                'author.name': { $ne: 'Ada' },
               },
             },
           },
@@ -193,14 +183,13 @@ describe('planUpdates', () => {
             {
               'elem.author._id': userId,
               'elem.author._v': { $lt: T1 },
-              'elem.author.name': { $ne: 'Ada' },
             },
           ],
         },
       ]);
     });
 
-    it('uses $or for the no-op filter inside elements', () => {
+    it('sets and unsets inside elements behind the version guard', () => {
       const op = only(
         planFor(event({ changed: { name: 'Ada' }, removed: ['avatar'] }), postsCommentsAuthor),
       );
@@ -209,23 +198,10 @@ describe('planUpdates', () => {
         $unset: { 'comments.$[elem].author.avatar': '' },
       });
       expect(op.arrayFilters).toEqual([
-        {
-          'elem.author._id': userId,
-          'elem.author._v': { $lt: T1 },
-          $or: [
-            { 'elem.author.name': { $ne: 'Ada' } },
-            { 'elem.author.avatar': { $exists: true } },
-          ],
-        },
+        { 'elem.author._id': userId, 'elem.author._v': { $lt: T1 } },
       ]);
       expect(op.filter).toEqual({
-        comments: {
-          $elemMatch: {
-            'author._id': userId,
-            'author._v': { $lt: T1 },
-            $or: [{ 'author.name': { $ne: 'Ada' } }, { 'author.avatar': { $exists: true } }],
-          },
-        },
+        comments: { $elemMatch: { 'author._id': userId, 'author._v': { $lt: T1 } } },
       });
     });
 
@@ -233,14 +209,12 @@ describe('planUpdates', () => {
       const likedBy = relation({ id: 'posts.likedBy', path: 'likedBy[]', array: true });
       const op = only(planFor(event({ changed: { name: 'Ada' } }), likedBy));
       expect(op.filter).toEqual({
-        likedBy: { $elemMatch: { _id: userId, _v: { $lt: T1 }, name: { $ne: 'Ada' } } },
+        likedBy: { $elemMatch: { _id: userId, _v: { $lt: T1 } } },
       });
       expect(op.update).toEqual({
         $set: { 'likedBy.$[elem].name': 'Ada', 'likedBy.$[elem]._v': T1 },
       });
-      expect(op.arrayFilters).toEqual([
-        { 'elem._id': userId, 'elem._v': { $lt: T1 }, 'elem.name': { $ne: 'Ada' } },
-      ]);
+      expect(op.arrayFilters).toEqual([{ 'elem._id': userId, 'elem._v': { $lt: T1 } }]);
     });
   });
 
@@ -255,7 +229,6 @@ describe('planUpdates', () => {
           filter: {
             'createdBy._id': userId,
             'createdBy._v': { $lt: T1 },
-            'createdBy.deleted': { $ne: true },
           },
           update: { $set: { 'createdBy.deleted': true, 'createdBy._v': T1 } },
         },
@@ -268,11 +241,7 @@ describe('planUpdates', () => {
         $set: { 'comments.$[elem].author.deleted': true, 'comments.$[elem].author._v': T1 },
       });
       expect(op.arrayFilters).toEqual([
-        {
-          'elem.author._id': userId,
-          'elem.author._v': { $lt: T1 },
-          'elem.author.deleted': { $ne: true },
-        },
+        { 'elem.author._id': userId, 'elem.author._v': { $lt: T1 } },
       ]);
     });
 
@@ -406,6 +375,21 @@ describe('planUpdates', () => {
       expect(newer.update).toMatchObject({ $set: { 'createdBy._v': T2 } });
       expect(older.filter['createdBy._v']).toEqual({ $lt: T1 });
       expect(T2.lessThan(T1)).toBe(false);
+    });
+
+    it('advances _v even when the snapshot already holds the value (A → B → A)', () => {
+      // Snapshot: { name: 'A', _v: T1 }. Writes: T2 sets 'B', T3 sets 'A' again.
+      // The T3 event is processed first; the T2 event arrives late (retry, queue, inline + stream).
+      const T3 = new Timestamp({ t: 1_760_000_000, i: 3 });
+      const latest = only(planFor(event({ version: T3, changed: { name: 'A' } }), postsCreatedBy));
+      const late = only(planFor(event({ version: T2, changed: { name: 'B' } }), postsCreatedBy));
+
+      // T3 must match the unchanged snapshot (T1 < T3) so _v moves to T3 ...
+      expect(latest.filter).toEqual({ 'createdBy._id': userId, 'createdBy._v': { $lt: T3 } });
+      expect(latest.update).toEqual({ $set: { 'createdBy.name': 'A', 'createdBy._v': T3 } });
+      // ... which makes the late T2 event a no-op: T3 is not < T2.
+      expect(late.filter['createdBy._v']).toEqual({ $lt: T2 });
+      expect(T3.lessThan(T2)).toBe(false);
     });
 
     it('guards array elements with $lt as well', () => {

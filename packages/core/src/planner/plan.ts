@@ -115,12 +115,6 @@ function planSync(
   changes: SnapshotChanges,
 ): PlannedOperation {
   const scope = snapshotScope(relation);
-  // No-op filter: only match snapshots where at least one value would change.
-  const noOp = [
-    ...[...changes.set].map(([path, value]) => ({ [path]: { $ne: value } })),
-    ...[...changes.unset].map((path) => ({ [path]: { $exists: true } })),
-  ];
-
   const sets: [string, unknown][] = [
     ...[...changes.set].map(([path, value]): [string, unknown] => [scope.updatePath(path), value]),
     [scope.updatePath('_v'), event.version],
@@ -135,7 +129,7 @@ function planSync(
   return {
     relationId: relation.id,
     collection: relation.target,
-    ...scope.match(guard(event, noOp)),
+    ...scope.match(guard(event)),
     update,
   };
 }
@@ -149,7 +143,7 @@ function planDelete(relation: RelationConfig, event: NormalizedChangeEvent): Pla
       return [
         {
           ...operation,
-          ...scope.match(guard(event, [{ deleted: { $ne: true } }])),
+          ...scope.match(guard(event)),
           update: {
             $set: { [scope.updatePath('deleted')]: true, [scope.updatePath('_v')]: event.version },
           },
@@ -159,7 +153,7 @@ function planDelete(relation: RelationConfig, event: NormalizedChangeEvent): Pla
       const { location } = scope;
       if (location.arrayField !== null && location.inner === '') {
         // Each element is a snapshot: unsetting it would leave null in the array, so pull it.
-        const conditions = guard(event, []);
+        const conditions = guard(event);
         return [
           {
             ...operation,
@@ -171,7 +165,7 @@ function planDelete(relation: RelationConfig, event: NormalizedChangeEvent): Pla
       return [
         {
           ...operation,
-          ...scope.match(guard(event, [])),
+          ...scope.match(guard(event)),
           update: { $unset: { [scope.updatePath('')]: '' } },
         },
       ];
@@ -181,13 +175,13 @@ function planDelete(relation: RelationConfig, event: NormalizedChangeEvent): Pla
   }
 }
 
-/** Version guard plus no-op filter, with keys relative to the snapshot. */
-function guard(event: NormalizedChangeEvent, noOp: readonly Document[]): Document {
-  const conditions: Document = { _id: event.srcId, _v: { $lt: event.version } };
-  const [single] = noOp;
-  if (noOp.length > 1) conditions.$or = noOp;
-  else if (single) Object.assign(conditions, single);
-  return conditions;
+/**
+ * Version guard, with keys relative to the snapshot. There are deliberately no value conditions:
+ * a snapshot that already holds the new values must still get the newer `_v`, or a late older
+ * event could overwrite it later. Loops are prevented by rejecting cascade cycles in validation.
+ */
+function guard(event: NormalizedChangeEvent): Document {
+  return { _id: event.srcId, _v: { $lt: event.version } };
 }
 
 /** Renders snapshot-relative paths and conditions for a relation's flat or array location. */
@@ -218,13 +212,9 @@ function snapshotScope(relation: RelationConfig) {
   };
 }
 
-/** Prefixes every field path in a condition document, including inside `$or`. */
+/** Prefixes every field path in a condition document. */
 function prefixKeys(conditions: Document, prefix: string): Document {
   return Object.fromEntries(
-    Object.entries(conditions).map(([key, value]) =>
-      key === '$or'
-        ? [key, (value as Document[]).map((branch) => prefixKeys(branch, prefix))]
-        : [joinPath(prefix, key), value],
-    ),
+    Object.entries(conditions).map(([key, value]) => [joinPath(prefix, key), value]),
   );
 }
