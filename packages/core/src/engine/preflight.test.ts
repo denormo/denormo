@@ -1,8 +1,13 @@
 import type { Db } from 'mongodb';
 import { describe, expect, it } from 'vitest';
-import { postsCommentsAuthor, postsCreatedBy, relation } from '../../test/fixtures.js';
+import {
+  postsCommentsAuthor,
+  postsCreatedBy,
+  relation,
+  usersPostsConfig,
+} from '../../test/fixtures.js';
 import { DenormoRuntimeError } from '../errors.js';
-import { assertReplicaSet, snapshotIdIndexKey } from './preflight.js';
+import { assertReplicaSet, ensureSnapshotIndexes, snapshotIdIndexKey } from './preflight.js';
 
 /** A Db whose admin `hello` returns `reply`; nothing else is called. */
 function dbReplying(reply: Record<string, unknown>): Db {
@@ -34,5 +39,38 @@ describe('snapshotIdIndexKey', () => {
     expect(snapshotIdIndexKey(relation({ id: 'l', path: 'likedBy[]', array: true }))).toBe(
       'likedBy._id',
     );
+  });
+});
+
+describe('ensureSnapshotIndexes', () => {
+  it('treats NamespaceNotFound from any driver copy as "no indexes yet"', async () => {
+    // A plain object, not this package's MongoServerError: the app's driver may be another copy.
+    const missing = Object.assign(new Error('ns does not exist'), {
+      code: 26,
+      codeName: 'NamespaceNotFound',
+    });
+    const db = {
+      collection: () => ({ indexes: () => Promise.reject(missing) }),
+    } as unknown as Db;
+    const warnings: string[] = [];
+
+    await ensureSnapshotIndexes(db, usersPostsConfig(), {
+      autoIndex: false,
+      onWarning: (message) => warnings.push(message),
+    });
+
+    expect(warnings).toHaveLength(2);
+  });
+
+  it('rethrows other errors', async () => {
+    const db = {
+      collection: () => ({ indexes: () => Promise.reject(new Error('auth failed')) }),
+    } as unknown as Db;
+    await expect(
+      ensureSnapshotIndexes(db, usersPostsConfig(), {
+        autoIndex: false,
+        onWarning: () => undefined,
+      }),
+    ).rejects.toThrow('auth failed');
   });
 });

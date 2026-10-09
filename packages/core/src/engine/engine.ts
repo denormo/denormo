@@ -1,4 +1,4 @@
-import { type ChangeStream, type Db, type Document, Timestamp } from 'mongodb';
+import type { ChangeStream, Db, Document, Timestamp } from 'mongodb';
 import { buildReverseMap } from '../config/reverse-map.js';
 import type { CompiledConfig } from '../config/types.js';
 import { assertValidConfig, type ValidateOptions } from '../config/validate.js';
@@ -7,6 +7,7 @@ import { planUpdates } from '../planner/plan.js';
 import { createCursorStore, type StreamPosition } from '../state/cursors.js';
 import { executeOperations } from '../stream/execute.js';
 import { normalizeChangeEvent } from '../stream/normalize.js';
+import { nextClusterTime } from './cluster-time.js';
 import { assertReplicaSet, ensureSnapshotIndexes } from './preflight.js';
 
 export const DEFAULT_STATE_PREFIX = '_denormo_';
@@ -85,7 +86,7 @@ export async function createSyncEngine(options: SyncEngineOptions): Promise<Sync
     if (stored) return stored;
     // First start: begin just after "now" (startAtOperationTime is inclusive, and "now" is the
     // last write's time), and save that point at once so a restart before any event resumes here.
-    const fresh = { startAtOperationTime: nextTimestamp(await currentClusterTime(db)) };
+    const fresh = { startAtOperationTime: nextClusterTime(await currentClusterTime(db)) };
     await cursors.save(source, fresh);
     return fresh;
   }
@@ -176,13 +177,6 @@ async function currentClusterTime(db: Db): Promise<Timestamp> {
     });
   }
   return operationTime;
-}
-
-/** The smallest cluster time after `time`. */
-function nextTimestamp(time: Timestamp): Timestamp {
-  const MAX_INCREMENT = 0xffff_ffff;
-  const { t, i } = time;
-  return i < MAX_INCREMENT ? new Timestamp({ t, i: i + 1 }) : new Timestamp({ t: t + 1, i: 0 });
 }
 
 function errorMessage(error: unknown): string {

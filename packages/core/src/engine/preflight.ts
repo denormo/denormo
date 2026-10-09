@@ -1,4 +1,4 @@
-import { type Db, type IndexDescriptionInfo, MongoServerError } from 'mongodb';
+import type { Db, IndexDescriptionInfo } from 'mongodb';
 import { stripArrayMarker } from '../config/paths.js';
 import type { CompiledConfig, RelationConfig } from '../config/types.js';
 import { DenormoRuntimeError } from '../errors.js';
@@ -55,7 +55,14 @@ async function listIndexes(db: Db, collection: string): Promise<IndexDescription
   try {
     return await db.collection(collection).indexes();
   } catch (error) {
-    if (error instanceof MongoServerError && error.code === NAMESPACE_NOT_FOUND) return [];
+    if (isNamespaceNotFound(error)) return [];
     throw error;
   }
+}
+
+/** By code, not `instanceof`: the error may come from the app's own driver copy. */
+function isNamespaceNotFound(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, codeName } = error as { code?: unknown; codeName?: unknown };
+  return code === NAMESPACE_NOT_FOUND || codeName === 'NamespaceNotFound';
 }
