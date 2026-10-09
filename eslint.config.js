@@ -59,5 +59,26 @@ export default defineConfig(
       ],
     },
   },
+  {
+    // Core works with whichever driver copy the app brings (Mongoose 8 ships driver 6, Mongoose 9
+    // driver 7). BSON values and error classes from another copy are rejected or fail instanceof,
+    // so core may only import types from mongodb. Tests may construct values.
+    files: ['packages/core/src/**/*.ts'],
+    ignores: ['packages/core/src/**/*.test.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'mongodb',
+              allowTypeImports: true,
+              message: 'Core may only import types from mongodb (see eslint.config.js).',
+            },
+          ],
+        },
+      ],
+    },
+  },
   prettier,
 );
