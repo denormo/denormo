@@ -77,17 +77,23 @@ function findSnapshots(schema: Schema, prefix: string): FoundSnapshot[] {
       found.push(...findSnapshots(type.schema, `${prefix}${path}[].`));
     } else if (type instanceof mongoose.Schema.Types.Subdocument) {
       found.push(...findSnapshots(type.schema, `${prefix}${path}.`));
-    } else if (
-      type instanceof mongoose.Schema.Types.Array &&
-      type.embeddedSchemaType instanceof Snapshot
-    ) {
-      found.push({
-        path: `${prefix}${path}[]`,
-        options: type.embeddedSchemaType.options,
-      });
+    } else if (type instanceof mongoose.Schema.Types.Array) {
+      const element = arrayElementType(type);
+      if (element instanceof Snapshot) {
+        found.push({ path: `${prefix}${path}[]`, options: element.options });
+      }
     }
   });
   return found;
+}
+
+/** The element schema type of an array path: `embeddedSchemaType` in Mongoose 9, `caster` in 8. */
+function arrayElementType(type: mongoose.Schema.Types.Array): unknown {
+  const { embeddedSchemaType, caster } = type as unknown as {
+    embeddedSchemaType?: unknown;
+    caster?: unknown;
+  };
+  return embeddedSchemaType ?? caster;
 }
 
 function toFieldMappings(id: string, fields: SnapshotOptions['fields'] | undefined) {
