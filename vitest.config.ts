@@ -1,16 +1,24 @@
 import { defineConfig } from 'vitest/config';
 
+// Workspace packages resolve to their TypeScript source (the "source" export condition), so
+// tests never run against a stale or missing build.
+const resolve = { conditions: ['source'] };
+
 export default defineConfig({
+  resolve,
+  ssr: { resolve },
   test: {
     passWithNoTests: true,
     projects: [
       {
+        extends: true,
         test: {
           name: 'unit',
           include: ['packages/*/src/**/*.test.ts'],
         },
       },
       {
+        extends: true,
         test: {
           name: 'integration',
           include: ['packages/*/test/integration/**/*.test.ts'],
