@@ -36,5 +36,8 @@
   },
   "peerDependencies": {
     "mongoose": "^8 || ^9"
+  },
+  "devDependencies": {
+    "mongoose": "^9.11.0"
   }
 }
