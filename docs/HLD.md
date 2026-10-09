@@ -93,6 +93,8 @@ createdBy: {
 }
 ```
 
+Assigning a source document to a snapshot path (`post.createdBy = user`) stores `_id` plus the declared fields under their `as` names; nothing else is copied. Plain objects with an `_id` are stored as given. Snapshots may sit at any depth: nested objects (`meta.editor`), inside document arrays (`comments[].author`), or as array elements (`likedBy: [{ type: Snapshot, ... }]`). Discriminator models are not walked separately (Phase 1b).
+
 **Compiled config (core)**
 
 ```json
@@ -267,23 +269,31 @@ Mongoose: opt-in `post('find')` / `post('findOne')` hooks. Native: `repair(docs,
 ## Public API surface
 
 ```js
+import mongoose from 'mongoose';
 import { Snapshot, snapshotSource, createSync } from '@denormo/mongoose';
 
-const sync = await createSync({
-  connection: mongoose.connection,
-  models: [User, Post, Comment],     // or omit to scan all registered models
-  mode: 'stream',                    // 'stream' | 'inline'
-  workerId: process.env.HOSTNAME,
-  batchSize: 500,
-  throttle: { maxDocsPerSecond: 5000 },
-  autoIndex: false,
+UserSchema.plugin(snapshotSource, { expose: ['name', 'avatar', 'role'] });
+const PostSchema = new mongoose.Schema({
+  createdBy: {
+    type: Snapshot,
+    ref: 'User',
+    fields: { name: { sync: true }, avatar: { sync: true, as: 'photo' }, role: { sync: false } },
+    onDelete: 'markDeleted',             // default 'keep'
+  },
 });
+post.createdBy = user;                   // copies _id + declared fields; never passwordHash
 
+const sync = await createSync({
+  connection: mongoose.connection,       // connected (or connecting)
+  models: [User, Post],                  // or omit to compile every model on the connection
+  mode: 'stream',                        // 'inline' arrives in Phase 1c
+  autoIndex: false,
+  onError: (error) => {},
+  onWarning: (message) => {},
+});
 await sync.start();
-sync.on('job:failed', (job) => alert(job));
-await sync.reconcile({ relation: 'posts.createdBy', dryRun: true });
-const status = await sync.status();
-await sync.stop();                   // graceful: finish current batch, release leases
+await sync.stop();
+// Later phases add: workerId, batchSize, throttle, sync.on(...), reconcile(), status().
 ```
 
 ```js

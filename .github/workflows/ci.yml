@@ -50,3 +50,25 @@ jobs:
           key: mongodb-${{ runner.os }}-${{ matrix.mongodb }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
+
+  integration-mongoose-8:
+    name: Integration tests (Mongoose 8, MongoDB 8.0.32)
+    runs-on: ubuntu-latest
+    env:
+      MONGOMS_VERSION: '8.0.32'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-${{ runner.os }}-8.0.32
+      - run: pnpm install --frozen-lockfile
+      # Mongoose 8 brings driver 6 (BSON 6); core keeps its driver 7 dev copy, which proves core
+      # works with whichever driver the app's Mongoose uses.
+      - run: pnpm --filter @denormo/mongoose add -D mongoose@^8
+      - run: pnpm vitest run --project integration packages/mongoose

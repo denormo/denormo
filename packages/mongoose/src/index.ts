@@ -1,2 +1,10 @@
-// The Mongoose adapter is built in Phase 1. See docs/HLD.md.
-export {};
+export {
+  Snapshot,
+  type SnapshotFieldOptions,
+  type SnapshotMode,
+  type SnapshotOnDelete,
+  type SnapshotOptions,
+} from './snapshot-type.js';
+export { getExposedFields, snapshotSource, type SnapshotSourceOptions } from './source-plugin.js';
+export { type AnyModel, compileConfig } from './compile.js';
+export { createSync, type CreateSyncOptions, type MongooseSync } from './create-sync.js';
