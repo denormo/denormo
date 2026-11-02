@@ -209,3 +209,111 @@ describe('inline mode: propagation', () => {
     expect(await copyOf(post._id)).toMatchObject({ name: 'Marker', role: 'admin' });
   });
 });
+
+describe('inline mode: sessions, limits and lifecycle', () => {
+  it('joins the caller’s transaction: an abort leaves the copies untouched', async () => {
+    const { user, post } = await seed();
+    await startInline();
+    const session = await ctx.connection.startSession();
+    try {
+      await expect(
+        session.withTransaction(async () => {
+          await User.updateOne({ _id: user._id }, { $set: { name: 'Rolled back' } }, { session });
+          throw new Error('abort');
+        }),
+      ).rejects.toThrow('abort');
+    } finally {
+      await session.endSession();
+    }
+    expect((await copyOf(post._id))?.name).toBe('Ada');
+  });
+
+  it('joins the caller’s transaction: a commit applies the copies', async () => {
+    const { user, post } = await seed();
+    await startInline();
+    const session = await ctx.connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await User.updateOne({ _id: user._id }, { $set: { name: 'Committed' } }, { session });
+      });
+    } finally {
+      await session.endSession();
+    }
+    expect((await copyOf(post._id))?.name).toBe('Committed');
+  });
+
+  it('skips a relation with more copies than inlineMaxTargets and warns', async () => {
+    const { user, post } = await seed();
+    await Post.create({ title: 'second', createdBy: user });
+    const { warnings } = await startInline({ inlineMaxTargets: 1 });
+
+    await User.updateOne({ _id: user._id }, { $set: { name: 'Too many' } });
+
+    expect((await copyOf(post._id))?.name).toBe('Ada');
+    expect(warnings).toContainEqual(expect.stringContaining('posts.createdBy'));
+  });
+
+  it('does nothing before start() and after stop()', async () => {
+    const { user, post } = await seed();
+    await User.updateOne({ _id: user._id }, { $set: { name: 'Before start' } });
+    expect((await copyOf(post._id))?.name).toBe('Ada');
+
+    const { sync } = await startInline();
+    await sync.stop();
+    await User.updateOne({ _id: user._id }, { $set: { name: 'After stop' } });
+    expect((await copyOf(post._id))?.name).toBe('Ada');
+  });
+
+  it('warns about its blind spots on start, and does not see updateMany', async () => {
+    const { user, post } = await seed();
+    const { warnings } = await startInline();
+
+    await User.updateMany({ _id: user._id }, { $set: { name: 'Bulk' } });
+
+    expect(warnings[0]).toContain('updateMany');
+    expect((await copyOf(post._id))?.name).toBe('Ada');
+  });
+
+  it('refuses a second inline sync on the same connection', async () => {
+    await startInline();
+    const second = await createSync({
+      connection: ctx.connection,
+      mode: 'inline',
+      onWarning: () => undefined,
+    });
+    await expect(second.start()).rejects.toMatchObject({ code: 'ALREADY_STARTED' });
+  });
+
+  it('reports a failed copy write without failing the app’s write', async () => {
+    const { user, post } = await seed();
+    await ctx.connection.db?.command({
+      collMod: 'posts',
+      validator: { 'createdBy.name': { $ne: 'Forbidden' } },
+      validationAction: 'error',
+    });
+    const { errors } = await startInline();
+    try {
+      await User.updateOne({ _id: user._id }, { $set: { name: 'Forbidden' } });
+
+      expect((await User.findById(user._id))?.name).toBe('Forbidden');
+      expect((await copyOf(post._id))?.name).toBe('Ada');
+      expect(errors).toEqual([
+        expect.objectContaining({ code: 'INLINE_SYNC_FAILED', source: 'users' }),
+      ]);
+    } finally {
+      await ctx.connection.db?.command({ collMod: 'posts', validator: {}, validationLevel: 'off' });
+    }
+  });
+
+  it('keeps working after a source write fails', async () => {
+    const { user, post } = await seed();
+    await startInline();
+
+    await expect(
+      User.updateOne({ _id: user._id }, { $set: { score: 'not a number' } }),
+    ).rejects.toThrow();
+    await User.updateOne({ _id: user._id }, { $set: { name: 'Recovered' } });
+
+    expect((await copyOf(post._id))?.name).toBe('Recovered');
+  });
+});
