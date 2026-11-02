@@ -79,15 +79,16 @@ export async function createSync(options: CreateSyncOptions): Promise<MongooseSy
     const handler: InlineHandler = { sync, onError };
     return {
       config,
-      start: () => {
-        activateInline(connection, handler);
-        onWarning(INLINE_BLIND_SPOTS);
-        return Promise.resolve();
-      },
-      stop: () => {
-        deactivateInline(connection, handler);
-        return Promise.resolve();
-      },
+      // Run inside the promise, so a failure (e.g. ALREADY_STARTED) rejects instead of throwing.
+      start: () =>
+        Promise.resolve().then(() => {
+          activateInline(connection, handler);
+          onWarning(INLINE_BLIND_SPOTS);
+        }),
+      stop: () =>
+        Promise.resolve().then(() => {
+          deactivateInline(connection, handler);
+        }),
     };
   }
 
