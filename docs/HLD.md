@@ -93,7 +93,7 @@ createdBy: {
 }
 ```
 
-Assigning a source document to a snapshot path (`post.createdBy = user`) stores `_id` plus the declared fields under their `as` names; nothing else is copied. Plain objects with an `_id` are stored as given. Snapshots may sit at any depth: nested objects (`meta.editor`), inside document arrays (`comments[].author`), or as array elements (`likedBy: [{ type: Snapshot, ... }]`). Discriminator models are not walked separately (Phase 1b).
+Assigning a source document to a snapshot path (`post.createdBy = user`) stores `_id` plus the declared fields under their `as` names; nothing else is copied. The same rule applies to whatever is assigned, including the plain copies that update calls (`updateOne`, `$push`, `bulkWrite`, …) and `lean()` produce: only `_id`, the engine's `_v` and `deleted`, and the declared fields are kept, and a source field name (`avatar`) is stored under its snapshot name (`photo`). Discriminator documents of the `ref` model are accepted. Values are copied raw (no getters). Snapshots may sit at any depth: nested objects (`meta.editor`), inside document arrays (`comments[].author`), or as array elements (`likedBy: [{ type: Snapshot, ... }]`). Discriminator models are not walked separately (Phase 1b).
 
 **Compiled config (core)**
 
@@ -281,7 +281,7 @@ const PostSchema = new mongoose.Schema({
     onDelete: 'markDeleted',             // default 'keep'
   },
 });
-post.createdBy = user;                   // copies _id + declared fields; never passwordHash
+post.createdBy = user;                   // keeps _id + declared fields, also via updateOne/$push/lean()
 
 const sync = await createSync({
   connection: mongoose.connection,       // connected (or connecting)
