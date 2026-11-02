@@ -26,6 +26,7 @@ interface SnapshotDoc {
 interface PostDoc {
   title: string;
   createdBy?: SnapshotDoc;
+  meta?: { editor?: SnapshotDoc };
   comments: { text: string; author?: SnapshotDoc }[];
   likedBy: SnapshotDoc[];
 }
@@ -58,6 +59,7 @@ beforeAll(() => {
       comments: [
         { text: String, author: { type: Snapshot, ref: 'User', fields: { name: { sync: true } } } },
       ],
+      meta: { editor: { type: Snapshot, ref: 'User', fields: { name: { sync: true } } } },
       likedBy: [{ type: Snapshot, ref: 'User', fields: { name: { sync: true } } }],
     }),
   );
@@ -110,6 +112,7 @@ describe('createSync', () => {
       'posts.comments.author',
       'posts.createdBy',
       'posts.likedBy',
+      'posts.meta.editor',
     ]);
     expect(sync.config.sources).toEqual({ users: { expose: ['name', 'avatar', 'role'] } });
   });
@@ -166,5 +169,77 @@ describe('createSync', () => {
     >[0];
     await expect(createSync(inline)).rejects.toBeInstanceOf(DenormoConfigError);
     await expect(createSync(inline)).rejects.toMatchObject({ code: 'UNSUPPORTED_MODE' });
+  });
+});
+
+describe('assigning a source document through any write', () => {
+  /** Every snapshot stored in the post, read from the raw collection (no Mongoose casting). */
+  async function storedSnapshots(id: unknown): Promise<unknown[]> {
+    const raw = await ctx.connection.db
+      ?.collection<PostDoc>('posts')
+      .findOne({ _id: id as mongoose.Types.ObjectId });
+    return [
+      raw?.createdBy,
+      raw?.meta?.editor,
+      ...(raw?.comments ?? []).map((comment) => comment.author),
+      ...(raw?.likedBy ?? []),
+    ].filter((snapshot) => snapshot !== undefined);
+  }
+
+  it('never stores undeclared fields such as passwordHash or __v', async () => {
+    const ada = await User.create({
+      name: 'Ada',
+      avatar: 'a.png',
+      role: 'admin',
+      passwordHash: 'secret',
+    });
+    const lean = await User.findById(ada._id).lean();
+    const writes: [string, (id: mongoose.Types.ObjectId) => Promise<unknown>][] = [
+      ['updateOne $set', (_id) => Post.updateOne({ _id }, { $set: { createdBy: ada } })],
+      ['updateOne without operator', (_id) => Post.updateOne({ _id }, { createdBy: ada })],
+      [
+        'updateOne $set with a lean user',
+        (_id) => Post.updateOne({ _id }, { $set: { createdBy: lean } }),
+      ],
+      ['$push into likedBy', (_id) => Post.updateOne({ _id }, { $push: { likedBy: ada } })],
+      ['$addToSet into likedBy', (_id) => Post.updateOne({ _id }, { $addToSet: { likedBy: ada } })],
+      [
+        '$push a comment',
+        (_id) => Post.updateOne({ _id }, { $push: { comments: { text: 'x', author: ada } } }),
+      ],
+      [
+        'bulkWrite updateOne',
+        (_id) =>
+          Post.bulkWrite([
+            { updateOne: { filter: { _id }, update: { $set: { createdBy: ada } } } },
+          ]),
+      ],
+      [
+        'findOneAndUpdate nested',
+        (_id) => Post.findOneAndUpdate({ _id }, { $set: { 'meta.editor': ada } }),
+      ],
+      ['replaceOne', (_id) => Post.replaceOne({ _id }, { title: 'replaced', createdBy: ada })],
+    ];
+
+    for (const [label, write] of writes) {
+      const post = await Post.create({ title: label });
+      await write(post._id);
+      const stored = await storedSnapshots(post._id);
+      expect(stored, label).not.toEqual([]);
+      expect(JSON.stringify(stored), label).not.toMatch(/passwordHash|secret|__v|avatar/);
+    }
+  });
+
+  it('stores the declared fields under their snapshot names', async () => {
+    const ada = await User.create({
+      name: 'Ada',
+      avatar: 'a.png',
+      role: 'admin',
+      passwordHash: 'secret',
+    });
+    const post = await Post.create({ title: 'x' });
+    await Post.updateOne({ _id: post._id }, { $set: { createdBy: ada } });
+    const [createdBy] = await storedSnapshots(post._id);
+    expect(createdBy).toEqual({ _id: ada._id, name: 'Ada', photo: 'a.png', role: 'admin' });
   });
 });
