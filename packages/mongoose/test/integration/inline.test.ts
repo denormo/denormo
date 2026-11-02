@@ -15,6 +15,12 @@ interface UserDoc {
   role?: string;
   score?: number;
   lastLoginAt?: Date;
+  tag?: string;
+  rank?: number;
+}
+interface LabelDoc {
+  _id: string;
+  title: string;
 }
 interface SnapshotDoc {
   _id: mongoose.Types.ObjectId;
@@ -28,10 +34,14 @@ interface PostDoc {
   title: string;
   createdBy?: SnapshotDoc;
   comments: { text: string; author?: SnapshotDoc }[];
+  tagged?: { _id: string; title?: string };
 }
 
 let User: mongoose.Model<UserDoc>;
 let Post: mongoose.Model<PostDoc>;
+let Label: mongoose.Model<LabelDoc>;
+/** Test-only switch: delete the matching user after denormo's pre hook, before the write. */
+const race = { deleteBeforeWrite: false };
 
 beforeAll(() => {
   const userSchema = new mongoose.Schema<UserDoc>({
@@ -40,9 +50,18 @@ beforeAll(() => {
     role: String,
     score: Number,
     lastLoginAt: Date,
+    tag: String,
+    rank: Number,
   });
   userSchema.plugin(snapshotSource, { expose: ['name', 'avatar', 'role', 'score'] });
+  // Registered after the plugin, so it runs after denormo's pre hook.
+  userSchema.pre('updateOne', async function () {
+    if (race.deleteBeforeWrite) await User.collection.deleteOne({ name: 'Ghost' });
+  });
   User = ctx.connection.model<UserDoc>('User', userSchema);
+  const labelSchema = new mongoose.Schema<LabelDoc>({ _id: String, title: String });
+  labelSchema.plugin(snapshotSource, { expose: ['title'] });
+  Label = ctx.connection.model<LabelDoc>('Label', labelSchema);
   Post = ctx.connection.model<PostDoc>(
     'Post',
     new mongoose.Schema<PostDoc>({
@@ -60,12 +79,13 @@ beforeAll(() => {
       comments: [
         { text: String, author: { type: Snapshot, ref: 'User', fields: { name: { sync: true } } } },
       ],
+      tagged: { type: Snapshot, ref: 'Label', fields: { title: { sync: true } } },
     }),
   );
 });
 
 beforeEach(async () => {
-  await Promise.all([User.deleteMany({}), Post.deleteMany({})]);
+  await Promise.all([User.deleteMany({}), Post.deleteMany({}), Label.deleteMany({})]);
 });
 
 afterEach(async () => {
@@ -289,6 +309,7 @@ describe('inline mode: sessions, limits and lifecycle', () => {
     await ctx.connection.db?.command({
       collMod: 'posts',
       validator: { 'createdBy.name': { $ne: 'Forbidden' } },
+      validationLevel: 'strict',
       validationAction: 'error',
     });
     const { errors } = await startInline();
@@ -315,5 +336,174 @@ describe('inline mode: sessions, limits and lifecycle', () => {
     await User.updateOne({ _id: user._id }, { $set: { name: 'Recovered' } });
 
     expect((await copyOf(post._id))?.name).toBe('Recovered');
+  });
+});
+
+describe('inline mode: review fixes', () => {
+  it('syncs a write whose _id filter is a string', async () => {
+    const { user, post } = await seed();
+    await startInline();
+
+    await User.updateOne({ _id: user._id.toString() }, { $set: { name: 'From string' } });
+    expect((await copyOf(post._id))?.name).toBe('From string');
+
+    await User.findByIdAndUpdate(user._id.toString(), { $set: { name: 'By id string' } });
+    expect((await copyOf(post._id))?.name).toBe('By id string');
+  });
+
+  it('lets the query’s sort pick the document, as without inline mode', async () => {
+    const low = await seed('Low');
+    const high = await seed('High');
+    await User.updateOne({ _id: low.user._id }, { $set: { tag: 'x', rank: 1 } });
+    await User.updateOne({ _id: high.user._id }, { $set: { tag: 'x', rank: 2 } });
+    await startInline();
+
+    await User.findOneAndUpdate({ tag: 'x' }, { $set: { name: 'Top' } }, { sort: { rank: -1 } });
+
+    expect((await User.findById(high.user._id))?.name).toBe('Top');
+    expect((await User.findById(low.user._id))?.name).toBe('Low');
+    expect((await copyOf(high.post._id))?.name).toBe('Top');
+    expect((await copyOf(low.post._id))?.name).toBe('Low');
+  });
+
+  it('honours the query’s collation when finding the document', async () => {
+    const { post } = await seed('Ada');
+    await startInline();
+
+    await User.updateOne(
+      { name: 'ada' },
+      { $set: { name: 'Collated' } },
+      { collation: { locale: 'en', strength: 2 } },
+    );
+
+    expect((await copyOf(post._id))?.name).toBe('Collated');
+  });
+
+  it('joins a transaction started with connection.transaction() (async local storage)', async () => {
+    const { user, post } = await seed();
+    await startInline();
+    mongoose.set('transactionAsyncLocalStorage', true);
+    try {
+      await ctx.connection.transaction(async () => {
+        await User.updateOne({ _id: user._id }, { $set: { name: 'In transaction' } });
+      });
+    } finally {
+      mongoose.set('transactionAsyncLocalStorage', false);
+    }
+    expect((await copyOf(post._id))?.name).toBe('In transaction');
+  });
+
+  it('never re-creates a vanished document under its old _id on upsert', async () => {
+    const ghost = await User.create({ name: 'Ghost' });
+    await startInline();
+    race.deleteBeforeWrite = true;
+    try {
+      await User.updateOne({ name: 'Ghost' }, { $set: { score: 5 } }, { upsert: true });
+    } finally {
+      race.deleteBeforeWrite = false;
+    }
+    expect(await User.findById(ghost._id)).toBeNull();
+    expect(await User.countDocuments({ name: 'Ghost' })).toBe(1);
+  });
+
+  it('reports a failed read-back without failing the app’s write', async () => {
+    const { user, post } = await seed();
+    const { errors } = await startInline();
+    const collection = User.collection as unknown as { findOne: (...args: unknown[]) => unknown };
+    const original = collection.findOne;
+    collection.findOne = () => Promise.reject(new Error('network blip'));
+    try {
+      await User.updateOne({ _id: user._id }, { $set: { name: 'Written' } });
+    } finally {
+      collection.findOne = original;
+    }
+    expect((await User.findById(user._id))?.name).toBe('Written');
+    expect((await copyOf(post._id))?.name).toBe('Ada');
+    expect(errors).toEqual([expect.objectContaining({ code: 'INLINE_SYNC_FAILED' })]);
+  });
+
+  it('reads the written document back from the primary', async () => {
+    const { user } = await seed();
+    await startInline();
+    const collection = User.collection as unknown as {
+      findOne: (filter: unknown, options?: { readPreference?: unknown }) => unknown;
+    };
+    const original = collection.findOne.bind(collection);
+    const seen: unknown[] = [];
+    collection.findOne = (filter, options) => {
+      seen.push(options?.readPreference);
+      return original(filter, options);
+    };
+    try {
+      await User.updateOne({ _id: user._id }, { $set: { name: 'Primary' } });
+    } finally {
+      collection.findOne = original;
+    }
+    expect(seen).toEqual(['primary']);
+  });
+
+  it('syncs only the document a regex _id filter actually changed', async () => {
+    await Label.create([
+      { _id: 'a1', title: 'One' },
+      { _id: 'a2', title: 'Two' },
+    ]);
+    const one = await Post.create({ title: 'p1', tagged: { _id: 'a1', title: 'One' } });
+    const two = await Post.create({ title: 'p2', tagged: { _id: 'a2', title: 'Two' } });
+    await startInline();
+
+    await Label.updateOne({ _id: /^a/ }, { $set: { title: 'Changed' } });
+
+    const changed = (await Label.find({ title: 'Changed' }).lean()).map((label) => label._id);
+    expect(changed).toHaveLength(1);
+    const copies = [
+      (await Post.findById(one._id).lean<PostDoc>())?.tagged,
+      (await Post.findById(two._id).lean<PostDoc>())?.tagged,
+    ];
+    expect(copies.filter((copy) => copy?.title === 'Changed').map((copy) => copy?._id)).toEqual(
+      changed,
+    );
+  });
+
+  it('fails the app’s write when a copy fails inside its transaction', async () => {
+    const { user } = await seed();
+    await ctx.connection.db?.command({
+      collMod: 'posts',
+      validator: { 'createdBy.name': { $ne: 'Forbidden' } },
+      validationLevel: 'strict',
+      validationAction: 'error',
+    });
+    await startInline();
+    const session = await ctx.connection.startSession();
+    try {
+      await expect(
+        session.withTransaction(async () => {
+          await User.updateOne({ _id: user._id }, { $set: { name: 'Forbidden' } }, { session });
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await session.endSession();
+      await ctx.connection.db?.command({ collMod: 'posts', validator: {}, validationLevel: 'off' });
+    }
+    expect((await User.findById(user._id))?.name).toBe('Ada');
+  });
+
+  it('joins the caller’s transaction on save()', async () => {
+    const { user, post } = await seed();
+    await startInline();
+    const session = await ctx.connection.startSession();
+    try {
+      await expect(
+        session.withTransaction(async () => {
+          const loaded = await User.findById(user._id).session(session);
+          if (!loaded) throw new Error('missing user');
+          loaded.name = 'Saved then aborted';
+          await loaded.save();
+          throw new Error('abort');
+        }),
+      ).rejects.toThrow('abort');
+    } finally {
+      await session.endSession();
+    }
+    expect((await copyOf(post._id))?.name).toBe('Ada');
   });
 });
