@@ -31,3 +31,10 @@ export {
   type SyncEngine,
   type SyncEngineOptions,
 } from './engine/engine.js';
+export {
+  createInlineSync,
+  DEFAULT_INLINE_MAX_TARGETS,
+  type InlineApplyResult,
+  type InlineSync,
+  type InlineSyncOptions,
+} from './inline/inline.js';
