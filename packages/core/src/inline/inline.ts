@@ -39,7 +39,7 @@ export interface InlineSync {
 /**
  * Applies source changes to their copies immediately (inline mode), with the same planner and
  * version guard as the stream engine. Validates the config and requires a replica set (inline
- * versions come from `session.operationTime`, which standalone servers do not report).
+ * versions come from the cluster time, which standalone servers do not report).
  */
 export async function createInlineSync(options: InlineSyncOptions): Promise<InlineSync> {
   const { db, config } = options;
