@@ -161,19 +161,30 @@ describe('inline mode: propagation', () => {
     expect((await copyOf(ada.post._id))?.name).toBe('Ada');
   });
 
-  it('versions the copy with the write’s cluster time, as the stream would', async () => {
+  it('never versions a copy later than its write, even under concurrent load', async () => {
+    // A later _v would block a real newer change; the stream later fixes an earlier one.
     const { user, post } = await seed();
     await startInline();
+    const noise = ctx.connection.collection('noise');
+    const quiet = new AbortController();
+    const load = (async () => {
+      while (!quiet.signal.aborted)
+        await noise.insertMany(Array.from({ length: 20 }, (_, n) => ({ n })));
+    })();
     const stream = User.collection.watch([{ $match: { operationType: 'update' } }]);
     try {
       await stream.tryNext();
-      await User.updateOne({ _id: user._id }, { $set: { name: 'Timed' } });
-      let event = await stream.tryNext();
-      while (!event) event = await stream.tryNext();
-
-      const version = (await copyOf(post._id))?._v;
-      expect(version?.equals(event.clusterTime as mongoose.mongo.Timestamp)).toBe(true);
+      for (let n = 0; n < 15; n++) {
+        await User.updateOne({ _id: user._id }, { $set: { name: `Timed ${String(n)}` } });
+        let event = await stream.tryNext();
+        while (!event) event = await stream.tryNext();
+        const version = (await copyOf(post._id))?._v;
+        const writeTime = event.clusterTime as mongoose.mongo.Timestamp;
+        expect(version?.greaterThan(writeTime), `write ${String(n)}`).toBe(false);
+      }
     } finally {
+      quiet.abort();
+      await load;
       await stream.close();
     }
   });
