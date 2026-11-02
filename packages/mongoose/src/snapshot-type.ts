@@ -22,10 +22,15 @@ export interface SnapshotOptions {
   readonly mode?: SnapshotMode;
 }
 
+/** Keys the sync engine writes into every snapshot; kept when a stored snapshot is cast. */
+const ENGINE_KEYS = ['_v', 'deleted'] as const;
+
 /**
  * Schema type for a denormalized copy of another model's document, stored as a plain object.
- * Assigning a document of the `ref` model copies its `_id` and the declared fields (renamed by
- * `as`); plain objects with an `_id` are stored as given.
+ * Whatever is assigned (a document of the `ref` model, a lean or `toObject()` copy, or a stored
+ * snapshot), only `_id`, the engine's `_v` and `deleted`, and the declared fields (under their
+ * `as` names) are kept. Update calls hand Mongoose a plain copy of the source document, so a
+ * pass-through for plain objects would leak fields such as `passwordHash`.
  */
 export class Snapshot extends mongoose.SchemaType {
   static schemaName = 'Snapshot' as const;
@@ -37,38 +42,65 @@ export class Snapshot extends mongoose.SchemaType {
   override cast(value: unknown): unknown {
     if (value === null || value === undefined) return value;
     const options = this.options as Partial<SnapshotOptions>;
+    const fields = options.fields ?? {};
     if (value instanceof mongoose.Document) {
-      const modelName = (value.constructor as { modelName?: unknown }).modelName;
-      if (modelName !== options.ref) {
+      const { modelName, baseModelName } = value.constructor as {
+        modelName?: unknown;
+        baseModelName?: unknown;
+      };
+      if (modelName !== options.ref && baseModelName !== options.ref) {
         throw new Error(
           `Snapshot "${this.path}" copies ${String(options.ref)} documents, got ${String(modelName)}.`,
         );
       }
-      return copyFields(value as SourceDocument, options.fields ?? {});
+      // Raw values (no getters), cloned so the snapshot shares no arrays with the source.
+      const source = value.toObject({
+        getters: false,
+        virtuals: false,
+        depopulate: true,
+      }) as Record<string, unknown>;
+      return pickFields(source, fields, 'source');
     }
-    if (typeof value === 'object' && '_id' in value) return value;
+    if (typeof value === 'object' && '_id' in value) return pickFields(value, fields, 'either');
     throw new Error(
       `Snapshot "${this.path}" must be a ${String(options.ref)} document or an object with _id.`,
     );
   }
 }
 
-/** The parts of a Mongoose document the copy reads. */
-interface SourceDocument {
-  readonly _id: unknown;
-  get(path: string): unknown;
-}
-
-function copyFields(
-  document: SourceDocument,
+/**
+ * Builds a snapshot from `value`, keeping only `_id`, the engine keys and the declared fields.
+ * `names: 'source'` reads each field under its source name (a source document); `'either'` prefers
+ * the snapshot name and falls back to the source name (a stored snapshot or a plain source copy).
+ */
+function pickFields(
+  value: object,
   fields: Readonly<Record<string, SnapshotFieldOptions>>,
+  names: 'source' | 'either',
 ): Record<string, unknown> {
-  const snapshot: Record<string, unknown> = { _id: document._id };
+  const snapshot: Record<string, unknown> = { _id: readPath(value, '_id').value };
+  for (const key of ENGINE_KEYS) {
+    const found = readPath(value, key);
+    if (found.exists) snapshot[key] = found.value;
+  }
   for (const [from, field] of Object.entries(fields)) {
-    const value: unknown = document.get(from);
-    if (value !== undefined) setPath(snapshot, field.as ?? from, value);
+    const to = field.as ?? from;
+    const asStored = names === 'either' ? readPath(value, to) : { exists: false as const };
+    const found = asStored.exists ? asStored : readPath(value, from);
+    if (found.exists && found.value !== undefined) setPath(snapshot, to, found.value);
   }
   return snapshot;
+}
+
+function readPath(value: unknown, path: string): { exists: boolean; value?: unknown } {
+  let current = value;
+  for (const segment of path.split('.')) {
+    if (typeof current !== 'object' || current === null || !(segment in current)) {
+      return { exists: false };
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return { exists: true, value: current };
 }
 
 function setPath(target: Record<string, unknown>, path: string, value: unknown): void {
