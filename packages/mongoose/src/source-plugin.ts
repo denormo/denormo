@@ -1,5 +1,6 @@
 import { DenormoConfigError } from '@denormo/core';
 import type { Schema } from 'mongoose';
+import { registerInlineHooks } from './inline/hooks.js';
 
 export interface SnapshotSourceOptions {
   /** Source field paths (dot notation) that snapshots may copy. */
@@ -7,7 +8,7 @@ export interface SnapshotSourceOptions {
 }
 
 /** Marks a schema as a snapshot source. Fields not listed in `expose` can never be copied. */
-export function snapshotSource(_schema: Schema, options: SnapshotSourceOptions): void {
+export function snapshotSource(schema: Schema, options: SnapshotSourceOptions): void {
   const expose: unknown = (options as Partial<SnapshotSourceOptions> | undefined)?.expose;
   if (!Array.isArray(expose) || !expose.every((field) => typeof field === 'string')) {
     throw new DenormoConfigError('snapshotSource needs { expose: string[] }.', {
@@ -15,7 +16,9 @@ export function snapshotSource(_schema: Schema, options: SnapshotSourceOptions):
       problems: [],
     });
   }
-  // Nothing to store: Mongoose keeps plugins and their options on the schema (see below).
+  // The expose list stays in Mongoose's plugin registry (see getExposedFields). Inline-mode
+  // hooks must be registered now: Mongoose ignores hooks added after the model is compiled.
+  registerInlineHooks(schema);
 }
 
 interface RegisteredPlugin {
