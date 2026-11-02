@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createSync, type MongooseSync } from '../../src/create-sync.js';
 import { Snapshot } from '../../src/snapshot-type.js';
 import { snapshotSource } from '../../src/source-plugin.js';
+import { waitFor } from '../../../../test/integration/wait-for.js';
 import { useConnection } from './connection.js';
 
 const ctx = useConnection();
@@ -505,5 +506,33 @@ describe('inline mode: review fixes', () => {
       await session.endSession();
     }
     expect((await copyOf(post._id))?.name).toBe('Ada');
+  });
+});
+
+describe('inline mode together with stream mode', () => {
+  it('never lets an inline write of one field block an older queued change to another', async () => {
+    const { user, post } = await seed();
+    // The stream is behind: it saved its position and stopped.
+    let stream = await createSync({ connection: ctx.connection, onWarning: () => undefined });
+    syncs.push(stream);
+    await stream.start();
+    await stream.stop();
+
+    // 1. A write only the stream sees (raw driver): a rename.
+    await ctx.connection
+      .collection('users')
+      .updateOne({ _id: user._id }, { $set: { name: 'Renamed raw' } });
+    // Any other write on the server in between, as a busy server always has.
+    await ctx.connection.collection('noise').insertOne({ at: new Date() });
+    // 2. An inline write of a different synced field, while the stream is still behind.
+    await startInline();
+    await User.updateOne({ _id: user._id }, { $set: { avatar: 'b.png' } });
+    // 3. The stream catches up.
+    stream = await createSync({ connection: ctx.connection, onWarning: () => undefined });
+    syncs.push(stream);
+    await stream.start();
+
+    await waitFor(async () => (await copyOf(post._id))?.name === 'Renamed raw');
+    expect(await copyOf(post._id)).toMatchObject({ name: 'Renamed raw', photo: 'b.png' });
   });
 });

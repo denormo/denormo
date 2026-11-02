@@ -130,6 +130,8 @@ Assigning a source document to a snapshot path (`post.createdBy = user`) stores 
 
 **Embedded shape.** Every snapshot stores `_id`, the copied fields, and `_v` (the source version it reflects, a BSON Timestamp). `_v` drives ordering, idempotency and read-repair. Applications create snapshots without `_v` (plain `{ _id, name }`), whatever client writes them. A missing `_v` counts as older than every event, so the first sync fills it in; nothing needs to stamp it.
 
+**One `_v` per copy.** `_v` says the whole copy reflects its source as of that version. A write that is not applied in source-event order (inline mode, and later reconcile or merged jobs) must therefore carry every synced field of the relation it updates; writing only the changed field would mark the copy's other fields as current and make the guard reject an older, still-queued change to them. The stream, which applies each source's events in order, may write only the changed fields.
+
 ## Sync engine
 
 One change stream per source collection feeds a planner that turns each relevant event into guarded, idempotent `updateMany` jobs. The version guard uses the event's `clusterTime`, so ordering is correct even when events are retried or processed late, and sources need no cooperating code.
@@ -190,6 +192,7 @@ createSync({ mode: 'inline' })   // hooks run the planned updates in the same re
 - The `snapshotSource` plugin registers the hooks when the schema is defined (Mongoose ignores hooks added after a model is compiled); they do nothing unless `createSync({ mode: 'inline' })` has started on that connection.
 - Covered writes: `save()` of an existing document, `updateOne`, `findOneAndUpdate`, `replaceOne`, `findOneAndReplace`. Writes that touch no synced field cost nothing extra.
 - Just before the write, the hook reads the cluster time (a `ping`); that is the version. It is never later than the write itself: the `operationTime` returned after a write can include later writes from other clients under load, and a copy versioned too late would block a real newer change. A version that is slightly early is harmless; the stream (or the next write) re-applies with a later one. After the write, the hook reads the touched synced fields back by `_id` and passes them to the same planner the stream uses. A filter that is not `{ _id: value }` is pinned to the `_id` read before the write.
+- An inline write carries every synced field of each relation it touches (and of relations sharing those fields), read back from the source, per the one-`_v`-per-copy rule above.
 - If the app writes with a session, the copies are written in that session, so they commit or roll back with the app's transaction.
 - A failed copy write is reported through `onError` (`INLINE_SYNC_FAILED`) and does not fail the app's write; inside the caller's transaction it fails the write so the transaction can abort.
 - Writes the hooks cannot see (`updateMany`, `bulkWrite`, deletes, raw driver, other services) and copies of copies are not synced. Starting inline mode logs a warning listing these blind spots, and `validate` reports them. Concurrent writes to the same source document can race in inline-only setups; running the stream alongside always converges.
