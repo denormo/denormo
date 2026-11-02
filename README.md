@@ -33,6 +33,15 @@ await sync.start();
 
 Requires a MongoDB replica set or sharded cluster (change streams).
 
+Inline mode updates copies inside the request that wrote the source, without a worker:
+
+```js
+const sync = await createSync({ connection: mongoose.connection, mode: 'inline' });
+await sync.start();
+```
+
+It only sees writes made through Mongoose (`save`, `updateOne`, `findOneAndUpdate`, `replaceOne`, `findOneAndReplace`); use stream mode to catch everything.
+
 ## Development
 
 Requires Node.js 22+ and pnpm.

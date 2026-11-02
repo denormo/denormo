@@ -178,17 +178,21 @@ createSync({ mode: 'inline' })   // hooks run the planned updates in the same re
 
 | | `inline` | `stream` |
 | --- | --- | --- |
-| Trigger | Mongoose `post('save')`, `post('findOneAndUpdate')`, `post('updateOne')` hooks on source models | Change stream on each source collection |
+| Trigger | Mongoose hooks on source models (`save`, `updateOne`, `findOneAndUpdate`, `replaceOne`, `findOneAndReplace`), registered by the `snapshotSource` plugin | Change stream on each source collection |
 | Freshness | Immediate, in the same request | Eventual, typically under a second |
 | Catches | Only writes made through Mongoose document and single-doc query APIs | Every write, from any client |
-| Fan-out | Single `updateMany`, capped by `inlineMaxTargets` (default 1,000); above it, handed to the queue if a worker runs, else logged as skipped | Batched, throttled, resumable |
-| Atomicity | Optional: `transactional: true` runs source and copy writes in one transaction | None, eventually consistent |
-| Requirements | None beyond Mongoose (transactions need a replica set) | Replica set or sharded cluster + worker process |
+| Fan-out | Single `updateMany` per relation, capped by `inlineMaxTargets` (default 1,000); above it the relation is skipped with a warning (the job queue arrives in Phase 2) | Batched, throttled, resumable |
+| Atomicity | Copies join the caller's session/transaction; a `transactional: true` flag (denormo wrapping each write) comes later | None, eventually consistent |
+| Requirements | Replica set or sharded cluster (versions need the cluster time, which standalone servers do not report) | Replica set or sharded cluster + worker process |
 
 **Inline mode details**
 
-- The hook reads the changed fields from the query or document diff and passes them to the same planner the stream uses. The version comes from the write's `session.operationTime`, the same cluster clock as the stream's `clusterTime`, so versions from both modes compare correctly.
-- Writes the hooks cannot see (`updateMany`, `bulkWrite`, raw driver, other services) are not synced. Startup logs a warning listing these blind spots, and `validate` reports them.
+- The `snapshotSource` plugin registers the hooks when the schema is defined (Mongoose ignores hooks added after a model is compiled); they do nothing unless `createSync({ mode: 'inline' })` has started on that connection.
+- Covered writes: `save()` of an existing document, `updateOne`, `findOneAndUpdate`, `replaceOne`, `findOneAndReplace`. Writes that touch no synced field cost nothing extra.
+- Just before the write, the hook reads the cluster time (a `ping`); that is the version. It is never later than the write itself: the `operationTime` returned after a write can include later writes from other clients under load, and a copy versioned too late would block a real newer change. A version that is slightly early is harmless; the stream (or the next write) re-applies with a later one. After the write, the hook reads the touched synced fields back by `_id` and passes them to the same planner the stream uses. A filter that is not `{ _id: value }` is pinned to the `_id` read before the write.
+- If the app writes with a session, the copies are written in that session, so they commit or roll back with the app's transaction.
+- A failed copy write is reported through `onError` (`INLINE_SYNC_FAILED`) and does not fail the app's write; inside the caller's transaction it fails the write so the transaction can abort.
+- Writes the hooks cannot see (`updateMany`, `bulkWrite`, deletes, raw driver, other services) and copies of copies are not synced. Starting inline mode logs a warning listing these blind spots, and `validate` reports them. Concurrent writes to the same source document can race in inline-only setups; running the stream alongside always converges.
 - Running `reconcile` periodically closes the gap left by unseen writes.
 
 **Switching modes.** Moving from `inline` to `stream` is a config change plus a one-off `reconcile`. Both modes can run together during migration: the version guard makes double application harmless.
@@ -286,7 +290,8 @@ post.createdBy = user;                   // keeps _id + declared fields, also vi
 const sync = await createSync({
   connection: mongoose.connection,       // connected (or connecting)
   models: [User, Post],                  // or omit to compile every model on the connection
-  mode: 'stream',                        // 'inline' arrives in Phase 1c
+  mode: 'stream',                        // 'stream' | 'inline'
+  inlineMaxTargets: 1000,                // inline only
   autoIndex: false,
   onError: (error) => {},
   onWarning: (message) => {},
