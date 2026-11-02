@@ -1,5 +1,12 @@
 import { DenormoRuntimeError, type NormalizedChangeEvent } from '@denormo/core';
-import type { ClientSession, Connection, MongooseQueryMiddleware, Query, Schema } from 'mongoose';
+import type {
+  ClientSession,
+  Connection,
+  mongo,
+  MongooseQueryMiddleware,
+  Query,
+  Schema,
+} from 'mongoose';
 import { readPath } from '../paths.js';
 import { activeInline, type InlineHandler } from './registry.js';
 import { affectedFields, touchedPaths } from './touched.js';
@@ -18,21 +25,23 @@ interface PendingWrite {
   readonly source: string;
   readonly fields: readonly string[];
   readonly srcId: unknown;
-  readonly session: ClientSession;
-  readonly ownsSession: boolean;
+  /** A cluster time read just before the write: never later than the write itself. */
+  readonly version: mongo.Timestamp;
+  /** The caller's session, if the write ran in one; the copies join it (and its transaction). */
+  readonly session: ClientSession | undefined;
 }
 
 /** Keyed by the document or query running the write. */
 const pending = new WeakMap<object, PendingWrite>();
 
-/** Minimal shapes of a hydrated document and a query, as the hooks use them. */
+/** Minimal shape of a hydrated document, as the hooks use it. */
 interface SourceDocument {
   readonly isNew: boolean;
   readonly db: Connection;
   readonly collection: { readonly collectionName: string };
   readonly _id: unknown;
   directModifiedPaths(): string[];
-  $session(session?: ClientSession | null): ClientSession | null;
+  $session(): ClientSession | null;
   toObject(options: Record<string, unknown>): unknown;
 }
 
@@ -44,6 +53,8 @@ interface SourceDocument {
 export function registerInlineHooks(schema: Schema): void {
   schema.pre('save', async function () {
     const document = this as unknown as SourceDocument;
+    // A failed earlier save never reached its post hook; drop what it left behind.
+    pending.delete(document);
     if (document.isNew) return;
     const handler = activeInline(document.db);
     if (!handler) return;
@@ -54,16 +65,13 @@ export function registerInlineHooks(schema: Schema): void {
     );
     if (fields.length === 0) return;
 
-    const existing = document.$session();
-    const session = existing ?? (await document.db.startSession());
-    if (!existing) document.$session(session);
     pending.set(document, {
       handler,
       source,
       fields,
       srcId: document._id,
-      session,
-      ownsSession: !existing,
+      version: await clusterTimeBeforeWrite(document.db, source),
+      session: document.$session() ?? undefined,
     });
   });
 
@@ -71,14 +79,10 @@ export function registerInlineHooks(schema: Schema): void {
     const document = this as unknown as SourceDocument;
     const write = take(document);
     if (!write) return;
-    try {
-      await applyWrite(
-        write,
-        document.toObject({ getters: false, virtuals: false, depopulate: true }),
-      );
-    } finally {
-      await release(write, () => document.$session(null));
-    }
+    await applyWrite(
+      write,
+      document.toObject({ getters: false, virtuals: false, depopulate: true }),
+    );
   });
 
   schema.pre(QUERY_WRITES, async function () {
@@ -91,31 +95,49 @@ export function registerInlineHooks(schema: Schema): void {
     const fields = affectedFields(touched, handler.sync.syncedFields(source));
     if (fields.length === 0) return;
 
-    const existing = query.getOptions().session ?? undefined;
-    const srcId = await targetId(query, existing);
+    const session = query.getOptions().session ?? undefined;
+    const srcId = await targetId(query, session);
     if (srcId === undefined) return; // Nothing matches, so nothing changes.
-    const session = existing ?? (await model.db.startSession());
-    if (!existing) query.setOptions({ session });
     // Pin the write to the document found here, so the post hook syncs the one that changed.
     query.where({ _id: srcId });
-    pending.set(query, { handler, source, fields, srcId, session, ownsSession: !existing });
+    pending.set(query, {
+      handler,
+      source,
+      fields,
+      srcId,
+      version: await clusterTimeBeforeWrite(model.db, source),
+      session,
+    });
   });
 
   schema.post(QUERY_WRITES, async function (result: unknown) {
     const query = this as unknown as Query<unknown, unknown>;
     const write = take(query);
-    if (!write) return;
-    try {
-      if (!wroteSomething(result)) return;
-      const current = await query.model.collection.findOne(
-        { _id: write.srcId as never },
-        { session: write.session },
-      );
-      await applyWrite(write, current);
-    } finally {
-      await release(write, () => query.setOptions({ session: null }));
-    }
+    if (!write || !wroteSomething(result)) return;
+    const current = await query.model.collection.findOne(
+      { _id: write.srcId as never },
+      write.session ? { session: write.session } : {},
+    );
+    await applyWrite(write, current);
   });
+}
+
+/**
+ * The server's cluster time right now, before the write: a lower bound of the write's own time.
+ * The `operationTime` returned after a write can include later writes from other clients under
+ * load, and a copy versioned too late would block a real newer change. A version that is too
+ * early is harmless: the stream (or the next write) re-applies with a later one.
+ */
+async function clusterTimeBeforeWrite(connection: Connection, source: string) {
+  const reply = await connection.db?.command({ ping: 1 });
+  const operationTime = reply?.operationTime as mongo.Timestamp | undefined;
+  if (!operationTime) {
+    throw new DenormoRuntimeError(
+      'The server reported no operationTime; inline mode needs a replica set.',
+      { code: 'NO_OPERATION_TIME', source },
+    );
+  }
+  return operationTime;
 }
 
 /** The operation a query runs (`updateOne`, ...); not in Mongoose's TypeScript types. */
@@ -157,50 +179,32 @@ function wroteSomething(result: unknown): boolean {
 /** Turns the written source document into an event and applies it to the copies. */
 async function applyWrite(write: PendingWrite, document: unknown): Promise<void> {
   if (document === null || document === undefined) return;
+  const changed: Record<string, unknown> = {};
+  const removed: string[] = [];
+  for (const field of write.fields) {
+    const found = readPath(document, field);
+    if (found.exists) changed[field] = found.value;
+    else removed.push(field);
+  }
+  const event: NormalizedChangeEvent = {
+    op: 'update',
+    source: write.source,
+    srcId: write.srcId,
+    version: write.version,
+    changed,
+    removed,
+  };
   try {
-    const version = write.session.operationTime;
-    if (!version) {
-      throw new DenormoRuntimeError(
-        'The write reported no operationTime; inline mode needs a replica set.',
-        {
-          code: 'NO_OPERATION_TIME',
-          source: write.source,
-        },
-      );
-    }
-    const changed: Record<string, unknown> = {};
-    const removed: string[] = [];
-    for (const field of write.fields) {
-      const found = readPath(document, field);
-      if (found.exists) changed[field] = found.value;
-      else removed.push(field);
-    }
-    const event: NormalizedChangeEvent = {
-      op: 'update',
-      source: write.source,
-      srcId: write.srcId,
-      version,
-      changed,
-      removed,
-    };
-    await write.handler.sync.apply(event, { session: write.session });
+    await write.handler.sync.apply(event, write.session ? { session: write.session } : {});
   } catch (error) {
     // Inside the caller's transaction, fail the write so the transaction can abort.
-    if (write.session.inTransaction()) throw error;
+    if (write.session?.inTransaction()) throw error;
     write.handler.onError(
-      error instanceof DenormoRuntimeError
-        ? error
-        : new DenormoRuntimeError(`Inline sync of "${write.source}" failed.`, {
-            code: 'INLINE_SYNC_FAILED',
-            source: write.source,
-            cause: error,
-          }),
+      new DenormoRuntimeError(`Inline sync of "${write.source}" failed.`, {
+        code: 'INLINE_SYNC_FAILED',
+        source: write.source,
+        cause: error,
+      }),
     );
   }
-}
-
-async function release(write: PendingWrite, detach: () => unknown): Promise<void> {
-  if (!write.ownsSession) return;
-  detach();
-  await write.session.endSession();
 }

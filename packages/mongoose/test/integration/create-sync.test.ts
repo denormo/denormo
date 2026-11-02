@@ -163,12 +163,12 @@ describe('createSync', () => {
     });
   });
 
-  it('refuses inline mode until it exists', async () => {
-    const inline = { connection: ctx.connection, mode: 'inline' } as unknown as Parameters<
+  it('refuses an unknown mode', async () => {
+    const unknownMode = { connection: ctx.connection, mode: 'batch' } as unknown as Parameters<
       typeof createSync
     >[0];
-    await expect(createSync(inline)).rejects.toBeInstanceOf(DenormoConfigError);
-    await expect(createSync(inline)).rejects.toMatchObject({ code: 'UNSUPPORTED_MODE' });
+    await expect(createSync(unknownMode)).rejects.toBeInstanceOf(DenormoConfigError);
+    await expect(createSync(unknownMode)).rejects.toMatchObject({ code: 'UNSUPPORTED_MODE' });
   });
 });
 
