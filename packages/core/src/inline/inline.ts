@@ -6,6 +6,7 @@ import { assertReplicaSet } from '../engine/preflight.js';
 import { planUpdates } from '../planner/plan.js';
 import type { NormalizedChangeEvent } from '../planner/types.js';
 import { executeOperations } from '../stream/execute.js';
+import { fieldsToWrite } from './fields.js';
 
 export const DEFAULT_INLINE_MAX_TARGETS = 1000;
 
@@ -29,6 +30,11 @@ export interface InlineApplyResult {
 export interface InlineSync {
   /** Synced field paths of a source collection. */
   syncedFields(source: string): readonly string[];
+  /**
+   * The synced fields a write that changed `changed` must carry: every synced field of each
+   * relation copying one of them (a copy's single `_v` covers all its fields).
+   */
+  fieldsToWrite(source: string, changed: readonly string[]): readonly string[];
   /** Plans and writes the copies for one source change, in `session` when given. */
   apply(
     event: NormalizedChangeEvent,
@@ -56,6 +62,7 @@ export async function createInlineSync(options: InlineSyncOptions): Promise<Inli
 
   return {
     syncedFields: (source) => [...(reverseMap.get(source)?.keys() ?? [])],
+    fieldsToWrite: (source, changed) => fieldsToWrite(config, source, changed),
     async apply(event, { session } = {}) {
       const applied: string[] = [];
       const skipped: string[] = [];

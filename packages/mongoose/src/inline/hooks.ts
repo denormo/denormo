@@ -62,9 +62,9 @@ export function registerInlineHooks(schema: Schema): void {
     const handler = activeInline(document.db);
     if (!handler) return;
     const source = document.collection.collectionName;
-    const fields = affectedFields(
-      document.directModifiedPaths(),
-      handler.sync.syncedFields(source),
+    const fields = handler.sync.fieldsToWrite(
+      source,
+      affectedFields(document.directModifiedPaths(), handler.sync.syncedFields(source)),
     );
     if (fields.length === 0) return;
 
@@ -94,7 +94,10 @@ export function registerInlineHooks(schema: Schema): void {
     if (!handler) return;
     const source = model.collection.collectionName;
     const touched = REPLACEMENTS.has(queryOp(query)) ? 'all' : touchedPaths(query.getUpdate());
-    const fields = affectedFields(touched, handler.sync.syncedFields(source));
+    const fields = handler.sync.fieldsToWrite(
+      source,
+      affectedFields(touched, handler.sync.syncedFields(source)),
+    );
     if (fields.length === 0) return;
 
     const options = query.getOptions();
