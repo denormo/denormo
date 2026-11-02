@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
-// Workspace packages resolve to their TypeScript source (the "source" export condition), so
-// tests never run against a stale or missing build.
-const resolve = { conditions: ['source'] };
+// Workspace packages resolve to their TypeScript source (the "@denormo/source" export
+// condition), so tests never run against a stale or missing build.
+const resolve = { conditions: ['@denormo/source'] };
 
 export default defineConfig({
   resolve,
