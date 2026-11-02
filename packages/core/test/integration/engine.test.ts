@@ -95,7 +95,11 @@ describe('createSyncEngine', () => {
     const { errors } = await startEngine();
     await users().updateOne({ _id: ada }, { $set: { name: 'Ada Lovelace' } });
 
-    await waitFor(async () => (await postSnapshot())?.name === 'Ada Lovelace');
+    // Relations of one event are applied in config order; comments[].author is the last.
+    await waitFor(
+      async () =>
+        (await posts().findOne({ _id: 'p1' }))?.comments?.[0]?.author.name === 'Ada Lovelace',
+    );
     const post = await posts().findOne({ _id: 'p1' });
     const { _v: flatVersion, ...flat } = post?.createdBy ?? {};
     expect(flat).toEqual({ _id: ada, name: 'Ada Lovelace', photo: 'a.png', role: 'admin' });
