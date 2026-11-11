@@ -1,7 +1,23 @@
 {
   "name": "@denormo/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "ODM-agnostic engine that keeps denormalized MongoDB snapshot fields in sync with their sources",
+  "keywords": [
+    "mongodb",
+    "denormalization",
+    "denormalize",
+    "snapshot",
+    "change-streams",
+    "sync",
+    "embedded-documents"
+  ],
+  "homepage": "https://github.com/denormo/denormo#readme",
+  "bugs": "https://github.com/denormo/denormo/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denormo/denormo.git",
+    "directory": "packages/core"
+  },
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -27,6 +43,9 @@
       }
     },
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsup",
