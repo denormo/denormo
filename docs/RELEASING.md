@@ -8,7 +8,7 @@ denormo publishes three packages, always together and with the same version:
 | `@denormo/mongoose` | Mongoose adapter (depends on core)             |
 | `denormo`           | Short name: re-exports `@denormo/mongoose`     |
 
-Versions and changelogs are managed with [Changesets](https://github.com/changesets/changesets); publishing runs in GitHub Actions (`.github/workflows/release.yml`) with npm [trusted publishing](https://docs.npmjs.com/trusted-publishers): no npm token is stored anywhere, and every version gets a provenance statement linking it to the commit and workflow run that built it.
+Versions and changelogs are managed with [Changesets](https://github.com/changesets/changesets); publishing runs in GitHub Actions (`.github/workflows/release.yml`) with npm [trusted publishing](https://docs.npmjs.com/trusted-publishers): no npm token is stored anywhere, and every version it publishes gets a provenance statement linking it to the commit and workflow run that built it (0.1.0, published by hand, has none).
 
 ## Every release
 
@@ -33,6 +33,8 @@ Notes:
 
 npm only lets a package trust a GitHub workflow once the package exists, so 0.1.0 is published by hand. Until the `NPM_PUBLISH` variable below is set, the Release workflow skips publishing (it logs a notice) and never fails for lack of credentials.
 
+0. **Before merging the release branch**, in the GitHub repository settings → Actions → General → Workflow permissions, tick **Allow GitHub Actions to create and approve pull requests**. The Release workflow needs it to open version PRs, whether or not publishing is on.
+
 1. **Publish 0.1.0 from your machine**, on an up-to-date `main` that contains the 0.1.0 versions:
 
    ```sh
@@ -43,6 +45,14 @@ npm only lets a package trust a GitHub workflow once the package exists, so 0.1.
    pnpm test
    pnpm changeset publish          # add --otp=123456 if your account uses 2FA codes
    git push origin --tags          # the tags changeset publish created
+   ```
+
+   Optionally, create the GitHub releases the workflow would have made:
+
+   ```sh
+   for tag in @denormo/core@0.1.0 @denormo/mongoose@0.1.0 denormo@0.1.0; do
+     gh release create "$tag" --title "$tag" --notes "First public release (experimental). See the CHANGELOG."
+   done
    ```
 
    Check: `npm view denormo`, `npm view @denormo/core`, `npm view @denormo/mongoose`.
@@ -58,15 +68,14 @@ npm only lets a package trust a GitHub workflow once the package exists, so 0.1.
 
    Then, under Settings → Publishing access, choose **Require two-factor authentication and disallow tokens**, so the workflow is the only way to publish besides you with 2FA.
 
-3. **Let the workflow publish and open PRs.** In the GitHub repository settings:
-   - Actions → General → Workflow permissions: tick **Allow GitHub Actions to create and approve pull requests**.
-   - Secrets and variables → Actions → Variables: add a repository variable `NPM_PUBLISH` with the value `enabled`.
+3. **Turn publishing on.** In the GitHub repository settings → Secrets and variables → Actions → Variables, add a repository variable `NPM_PUBLISH` with the value `enabled`.
 
 From then on, releases follow [Every release](#every-release). Setting `NPM_PUBLISH` to anything else pauses publishing.
 
 ## Release workflow details
 
 - Trigger: every push to `main`. One release runs at a time.
+- Jobs: `mode` (select-mode) decides; `version` opens the PR; `check` runs build, lint, typecheck and tests; `publish` runs only after `check` passes and is the only job allowed to mint the OIDC token npm trusts.
 - `changesets/action/select-mode` decides: pending changesets → `version` (open or update the version PR); versions in `package.json` that are not on npm → `publish`; otherwise nothing.
 - Publishing uses `pnpm publish` (through `changeset publish`), which replaces the `workspace:*` dependencies with the released version, and authenticates to npm with the workflow's GitHub OIDC token.
 - The checks before publishing run on Node 24 against MongoDB 8.0; the full MongoDB and Mongoose matrix runs in CI on every PR.
