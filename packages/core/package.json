@@ -1,6 +1,6 @@
 {
   "name": "@denormo/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ODM-agnostic engine that keeps denormalized MongoDB snapshot fields in sync with their sources",
   "keywords": [
     "mongodb",

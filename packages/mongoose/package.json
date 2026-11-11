@@ -1,6 +1,6 @@
 {
   "name": "@denormo/mongoose",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mongoose adapter for denormo: compiles schemas into the denormo core config",
   "keywords": [
     "mongodb",
