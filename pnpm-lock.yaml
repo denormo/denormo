@@ -51,6 +51,16 @@ importers:
         specifier: ^7.7.0
         version: 7.7.0
 
+  packages/denormo:
+    dependencies:
+      '@denormo/mongoose':
+        specifier: workspace:*
+        version: link:../mongoose
+    devDependencies:
+      mongoose:
+        specifier: ^9.11.0
+        version: 9.11.0
+
   packages/mongoose:
     dependencies:
       '@denormo/core':
