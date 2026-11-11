@@ -20,6 +20,7 @@ await User.updateOne({ _id: 1 }, { $set: { name: 'Ada Lovelace' } });
 > - **Deletes are ignored.** Deleting a source leaves its copies as they are, whatever `onDelete` says (Phase 4).
 > - **No backfill or repair.** Copies that were already stale before denormo started, or before a field was added to a snapshot, are not fixed (Phase 3).
 > - **One stream worker.** Run stream mode in a single process (see [Running in production](#running-in-production)); several workers sharing the load comes in Phase 2.
+> - **`expose` is checked at `createSync`, not when copies are written.** See [Sources](#sources-what-may-be-copied) (Phase 4).
 > - **Large bursts are slow.** Changes are applied one at a time. A burst of hundreds of source changes that each touch many copies can take a minute or more to settle (batching is Phase 2).
 >
 > See the [roadmap](#roadmap).
@@ -95,7 +96,7 @@ await User.updateOne({ _id: ada._id }, { $set: { name: 'Ada Lovelace' } });
 await sync.stop();
 ```
 
-Add an index on each copy's `_id` (here `posts.createdBy._id`), or denormo warns at start and every sync update scans the collection. See [Indexes](#indexes).
+Add an index on each copy's `_id` (here `posts.createdBy._id`), or every sync update scans the collection (in stream mode, `createSync` warns about it). See [Indexes](#indexes).
 
 ## Sources: what may be copied
 
@@ -105,7 +106,8 @@ A model whose fields are copied elsewhere is a **source**. Mark it with the `sna
 userSchema.plugin(snapshotSource, { expose: ['name', 'avatar', 'role'] });
 ```
 
-- Only exposed fields can ever end up in a copy. A snapshot asking for anything else (`passwordHash`) fails at `createSync` with `FIELD_NOT_EXPOSED`.
+- A snapshot that asks for a field the source does not expose (`passwordHash`) fails at `createSync` with `FIELD_NOT_EXPOSED`.
+- **Not checked when copies are written (yet).** Assigning a document stores every field the snapshot declares, exposed or not. A process that writes copies without calling `createSync` (for example a web tier that leaves syncing to a worker) does not see the error. Enforcement at write time is Phase 4; until then, keep the snapshot declarations and `expose` lists in sync and run `createSync` in your tests.
 - Add the plugin before the model is compiled (`mongoose.model(...)`). Mongoose ignores hooks added later, and inline mode needs the plugin's hooks.
 - A model referenced by a `Snapshot` path must have the plugin, or `createSync` fails with `SOURCE_NOT_DECLARED`.
 - Nested fields use dot notation: `expose: ['profile.displayName']`.
@@ -161,7 +163,7 @@ const postSchema = new mongoose.Schema({
 });
 ```
 
-One array level per path is supported; arrays nested inside arrays are not. In arrays, every element that copies the changed source is updated.
+One array level per path is supported. A snapshot inside a document array inside another document array fails with `INVALID_PATH`; an array of arrays of snapshots (`[[{ type: Snapshot }]]`) is ignored, with no error and no sync. In arrays, every element that copies the changed source is updated.
 
 ## Copies of copies
 
@@ -221,9 +223,9 @@ await User.updateOne({ _id }, { $set: { name: 'Ada Lovelace' } });
 - Covered writes: `doc.save()` on an existing document, `updateOne`, `findOneAndUpdate` (and `findByIdAndUpdate`), `replaceOne`, `findOneAndReplace`. Writes that touch no synced field cost nothing extra.
 - **Not seen:** `updateMany`, `bulkWrite`, deletes, raw driver writes, other services, and copies of copies. `start()` logs a warning listing these. Run stream mode as well if any of them happen in your app.
 - **Transactions:** when the write runs in a session (`{ session }` or Mongoose's `transactionAsyncLocalStorage`), the copies are written in that session and commit or roll back with your transaction.
-- **Failures:** a failed copy update is reported through `onError` (`INLINE_SYNC_FAILED`) and your write still succeeds. Inside a transaction, the error is thrown so the transaction can abort.
-- **Big fan-outs are skipped:** if one relation has more than `inlineMaxTargets` copies to update (default 1,000), it is skipped with a warning. Stream mode syncs those.
-- Each write that touches a synced field costs extra round trips: a cluster-time read before the write (plus an `_id` lookup when the filter is not by `_id`), a read-back of the source after it, and a count and an `updateMany` per affected snapshot path.
+- **Failures:** a failed copy update after your write is reported through `onError` (`INLINE_SYNC_FAILED`) and your write still succeeds. Inside a transaction, the error is thrown so the transaction can abort. Work that runs **before** your write (the cluster-time read, and the `_id` lookup described below) fails your write if it fails.
+- **Big fan-outs are skipped:** if more than `inlineMaxTargets` documents (default 1,000) hold copies to update for one relation, that relation is skipped with a warning. Stream mode syncs those. The limit counts documents, not copies: one post with many matching `comments` counts once.
+- Each write that touches a synced field costs extra round trips: a cluster-time read before the write; for `updateOne` and `replaceOne` whose filter is not an exact `_id`, an `_id` lookup before it; a read-back of the source after it (not for `save()`, which uses the document in memory); and a count and an `updateMany` per affected snapshot path.
 - Needs a replica set too (versions come from the cluster time).
 
 ### Both together
@@ -246,7 +248,7 @@ const sync = await createSync({
   connection: mongoose.connection, // required; connected or connecting
   models: [User, Post], // default: every model on the connection
   mode: 'stream', // 'stream' (default) or 'inline'
-  inlineMaxTargets: 1000, // inline: most copies one relation may update per write
+  inlineMaxTargets: 1000, // inline: most documents one relation may update per write
   validate: { maxCascadeDepth: 3 }, // longest chain of copies of copies
   autoIndex: false, // stream: create missing <path>._id indexes instead of warning
   statePrefix: '_denormo_', // prefix of denormo's own collections
@@ -263,7 +265,7 @@ await sync.stop();
 
 ## Errors and warnings
 
-All errors are `DenormoConfigError` (the configuration is wrong; thrown by `createSync` or `snapshotSource`) or `DenormoRuntimeError` (something failed while running). Both have a `code`, and a `relationId` such as `posts.createdBy` when one relation is at fault. `DenormoConfigError` also lists every problem found in `problems`; `DenormoRuntimeError` has the `source` collection and the original error as `cause` when relevant.
+Errors denormo raises itself are `DenormoConfigError` (the configuration is wrong; thrown by `createSync` or `snapshotSource`) or `DenormoRuntimeError` (something failed while running). Both have a `code`, and a `relationId` such as `posts.createdBy` when one relation is at fault. For errors found while validating the whole config, `DenormoConfigError` lists every problem in `problems` (empty for errors the Mongoose adapter raises while reading schemas); `error.message` always describes them. `DenormoRuntimeError` has the `source` collection and the original error as `cause` when relevant. Errors from the MongoDB driver or Mongoose (a lost connection, a failed cast) pass through unchanged.
 
 ```js
 import { DenormoConfigError } from 'denormo';
@@ -271,41 +273,44 @@ import { DenormoConfigError } from 'denormo';
 try {
   await createSync({ connection });
 } catch (error) {
-  if (error instanceof DenormoConfigError) console.error(error.problems);
+  if (error instanceof DenormoConfigError) console.error(error.code, error.message);
   throw error;
 }
 ```
 
 **Configuration errors**
 
-| Code                      | Meaning and fix                                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `INVALID_SNAPSHOT_SOURCE` | `snapshotSource` was called without `{ expose: string[] }`.                                                 |
-| `UNKNOWN_REF`             | A snapshot's `ref` is not a model on this connection. Check the name; define the model before `createSync`. |
-| `SOURCE_NOT_DECLARED`     | The `ref` model has no `snapshotSource` plugin. Add it, with the fields to expose.                          |
-| `FIELD_NOT_EXPOSED`       | A snapshot asks for a field its source does not expose. Expose it, or remove it from the snapshot.          |
-| `INVALID_SNAPSHOT_FIELD`  | A `fields` entry is not `{ sync: boolean, as?: string }`.                                                   |
-| `DUPLICATE_TARGET_FIELD`  | Two fields of one snapshot are stored under the same name. Use `as` to tell them apart.                     |
-| `RESERVED_TARGET_FIELD`   | A field would be stored as `_id`, `_v` or `deleted`, which denormo writes itself. Rename it with `as`.      |
-| `INVALID_PATH`            | A snapshot path is not supported, for example inside two levels of arrays.                                  |
-| `INVALID_ON_DELETE`       | `onDelete` is not `'keep'`, `'markDeleted'` or `'unset'`.                                                   |
-| `INVALID_MODE`            | A snapshot's `mode` is not `'stream'` or `'readRepair'`.                                                    |
-| `CYCLE`                   | Copies would feed back into their own source. Break the loop; see [Copies of copies](#copies-of-copies).    |
-| `CASCADE_TOO_DEEP`        | A chain of copies of copies is longer than `maxCascadeDepth`. Shorten it or raise the limit.                |
-| `UNSUPPORTED_MODE`        | `createSync` got a `mode` other than `'stream'` or `'inline'`.                                              |
+| Code                      | Meaning and fix                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `INVALID_SNAPSHOT_SOURCE` | `snapshotSource` was called without `{ expose: string[] }`.                                                                        |
+| `UNKNOWN_REF`             | A snapshot's `ref` is not a model on this connection. Check the name; define the model before `createSync`.                        |
+| `SOURCE_NOT_DECLARED`     | The `ref` model has no `snapshotSource` plugin. Add it, with the fields to expose.                                                 |
+| `FIELD_NOT_EXPOSED`       | A snapshot asks for a field its source does not expose. Expose it, or remove it from the snapshot.                                 |
+| `INVALID_SNAPSHOT_FIELD`  | A `fields` entry is not `{ sync: boolean, as?: string }`.                                                                          |
+| `INVALID_FIELD`           | A field name or `as` is not plain dot notation (empty, or with `$` or `[...]`).                                                    |
+| `DUPLICATE_TARGET_FIELD`  | Two fields of one snapshot are stored under the same name. Use `as` to tell them apart.                                            |
+| `RESERVED_TARGET_FIELD`   | A field would be stored as `_id`, `_v` or `deleted`, which denormo writes itself. Rename it with `as`.                             |
+| `INVALID_PATH`            | A snapshot path is not supported, for example inside two levels of document arrays.                                                |
+| `DUPLICATE_RELATION_ID`   | Two models share one collection and both declare the same snapshot path. Give them separate collections or remove one declaration. |
+| `INVALID_ON_DELETE`       | `onDelete` is not `'keep'`, `'markDeleted'` or `'unset'`.                                                                          |
+| `INVALID_MODE`            | A snapshot's `mode` is not `'stream'` or `'readRepair'`.                                                                           |
+| `CYCLE`                   | Copies would feed back into their own source. Break the loop; see [Copies of copies](#copies-of-copies).                           |
+| `CASCADE_TOO_DEEP`        | A chain of copies of copies is longer than `maxCascadeDepth`. Shorten it or raise the limit.                                       |
+| `UNSUPPORTED_MODE`        | `createSync` got a `mode` other than `'stream'` or `'inline'`.                                                                     |
 
-`DUPLICATE_RELATION_ID`, `UNKNOWN_SOURCE` and `UNSUPPORTED_CONFIG_VERSION` only occur when you build a config by hand with `@denormo/core`.
+`UNKNOWN_SOURCE` and `UNSUPPORTED_CONFIG_VERSION` only occur when you build a config by hand with `@denormo/core`.
 
 **Runtime errors**
 
-| Code                                        | Meaning and fix                                                                                                                                         |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NOT_CONNECTED`                             | The connection was closed when `createSync` ran. Connect first.                                                                                         |
-| `NOT_REPLICA_SET`                           | The server is a standalone `mongod`. Run a replica set (a single node is fine).                                                                         |
-| `ALREADY_STARTED`                           | `start()` was called while everything was running, or a second inline sync was started on the same connection.                                          |
-| `SOURCE_STOPPED`                            | Sent to `onError`: one source's stream stopped (see `cause`). Fix the cause and call `start()` again; it resumes from the change that failed.           |
-| `INLINE_SYNC_FAILED`                        | Sent to `onError`: copies of one inline write were not updated (see `cause`). Stream mode, if running, catches up.                                      |
-| `NO_OPERATION_TIME`, `MISSING_CLUSTER_TIME` | The server did not report a cluster time, which replica sets always do. Check that you are connected to a replica set and not through an unusual proxy. |
+| Code                   | Meaning and fix                                                                                                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NOT_CONNECTED`        | The connection was closed when `createSync` ran. Connect first.                                                                                                                                  |
+| `NOT_REPLICA_SET`      | The server is a standalone `mongod`. Run a replica set (a single node is fine).                                                                                                                  |
+| `ALREADY_STARTED`      | `start()` was called while everything was running, or a second inline sync was started on the same connection.                                                                                   |
+| `SOURCE_STOPPED`       | Sent to `onError`: one source's stream stopped (see `cause`). Fix the cause and call `start()` again; it resumes from the change that failed.                                                    |
+| `INLINE_SYNC_FAILED`   | Sent to `onError`: copies of one inline write were not updated (see `cause`). Stream mode, if running, catches up.                                                                               |
+| `NO_OPERATION_TIME`    | The server did not report a cluster time, which replica sets always do. Check that you are connected to a replica set and not through an unusual proxy. In inline mode it fails the app's write. |
+| `MISSING_CLUSTER_TIME` | A change event had no cluster time. Arrives as the `cause` of `SOURCE_STOPPED`, not on its own.                                                                                                  |
 
 **Warnings** go to `onWarning`:
 

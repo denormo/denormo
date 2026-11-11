@@ -49,7 +49,7 @@ await User.updateOne({ _id: ada._id }, { $set: { name: 'Ada Lovelace' } });
 // Every post's createdBy.name follows shortly after.
 ```
 
-Pass `mode: 'inline'` to update copies inside the request that writes the source instead; see the [guide](https://github.com/denormo/denormo#readme#sync-modes-stream-and-inline).
+Pass `mode: 'inline'` to update copies inside the request that writes the source instead; see the [guide](https://github.com/denormo/denormo#sync-modes-stream-and-inline).
 
 ## License
 
