@@ -31,7 +31,7 @@ Notes:
 
 ## First release (one time)
 
-npm only lets a package trust a GitHub workflow once the package exists, so 0.1.0 is published by hand. Until the `NPM_PUBLISH` variable below is set, the Release workflow skips publishing (it logs a notice) and never fails for lack of credentials.
+npm only lets a package trust a GitHub workflow once the package exists, so 0.1.0 was published by hand (done on 2026-11-11). Follow these steps again for any package added later: publish its first version by hand, then add its trusted publisher. Until the `NPM_PUBLISH` variable below is set, the Release workflow skips publishing (it logs a notice) and never fails for lack of credentials.
 
 0. **Before merging the release branch**, in the GitHub repository settings → Actions → General → Workflow permissions, tick **Allow GitHub Actions to create and approve pull requests**. The Release workflow needs it to open version PRs, whether or not publishing is on.
 
@@ -59,14 +59,18 @@ npm only lets a package trust a GitHub workflow once the package exists, so 0.1.
 
 2. **Trust the workflow on npm.** For each of the three packages, on npmjs.com open the package → Settings → Trusted publishing → GitHub Actions, and enter:
 
-   | Field                | Value         |
-   | -------------------- | ------------- |
-   | Organization or user | `denormo`     |
-   | Repository           | `denormo`     |
-   | Workflow filename    | `release.yml` |
-   | Environment name     | (leave empty) |
+   | Field                | Value                                                |
+   | -------------------- | ---------------------------------------------------- |
+   | Label                | `release` (optional, only a name)                    |
+   | Organization or user | `denormo`                                            |
+   | Repository           | `denormo`                                            |
+   | Workflow filename    | `release.yml`                                        |
+   | Environment name     | (leave empty)                                        |
+   | Allowed actions      | tick publishing directly (`npm publish`); no dist-tag |
 
-   Then, under Settings → Publishing access, choose **Require two-factor authentication and disallow tokens**, so the workflow is the only way to publish besides you with 2FA.
+   and click **Set up connection**. The workflow publishes directly (`changeset publish` runs `pnpm publish`), so stage-only would leave every release waiting; it needs no dist-tag access because publishing sets `latest` itself.
+
+   Then, under Settings → Publishing access, choose **Require two-factor authentication and disallow bypass 2fa tokens**, so the workflow is the only way to publish besides you with 2FA. This setting blocks tokens only; trusted publishing keeps working.
 
 3. **Turn publishing on.** In the GitHub repository settings → Secrets and variables → Actions → Variables, add a repository variable `NPM_PUBLISH` with the value `enabled`.
 
