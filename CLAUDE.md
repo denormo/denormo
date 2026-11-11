@@ -8,9 +8,11 @@ denormo keeps denormalized snapshot fields in MongoDB eventually consistent with
 packages/
   core/       @denormo/core      ODM-agnostic engine; depends only on `mongodb`
   mongoose/   @denormo/mongoose  Mongoose adapter; compiles schemas to core config
+  denormo/    denormo            Short name: re-exports @denormo/mongoose
   cli/        @denormo/cli       (Phase 3) CLI commands
 docs/
   HLD.md      design source of truth
+  RELEASING.md  how versions and npm releases work
 ```
 
 ## Stack
