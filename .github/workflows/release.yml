@@ -1,0 +1,72 @@
+name: Release
+
+# On every push to main:
+# - pending changesets: open or update the "Version Packages" PR;
+# - versions in package.json not yet on npm (the Version Packages PR was merged): run every check,
+#   then publish to npm with trusted publishing (OIDC, no token) and create tags and GitHub releases.
+# npm's trusted publisher for each package must name this file (release.yml). See docs/RELEASING.md.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Version or publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # version commits, tags, GitHub releases
+      pull-requests: write # the Version Packages PR
+      id-token: write # npm trusted publishing
+    env:
+      MONGOMS_VERSION: '8.0.32'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          # Trusted publishing needs Node 22.14+ (and npm 11.5.1+ for npm itself).
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: changesets/action/select-mode@v2
+        id: mode
+
+      - if: steps.mode.outputs.mode == 'version'
+        uses: changesets/action/version@v2
+        with:
+          commit-message: 'chore: version packages'
+          pr-title: 'chore: version packages'
+
+      # Publishing is off until the packages exist on npm and their trusted publishers are set
+      # up (repository variable NPM_PUBLISH=enabled); the first release is published by hand.
+      - if: steps.mode.outputs.mode == 'publish' && vars.NPM_PUBLISH != 'enabled'
+        run: echo "::notice::Unpublished versions found, but NPM_PUBLISH is not 'enabled'; skipping publish. See docs/RELEASING.md."
+
+      - id: checks
+        if: steps.mode.outputs.mode == 'publish' && vars.NPM_PUBLISH == 'enabled'
+        run: echo "run=true" >> "$GITHUB_OUTPUT"
+      - if: steps.checks.outputs.run == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-${{ runner.os }}-${{ env.MONGOMS_VERSION }}
+      - if: steps.checks.outputs.run == 'true'
+        run: pnpm build
+      - if: steps.checks.outputs.run == 'true'
+        run: pnpm lint
+      - if: steps.checks.outputs.run == 'true'
+        run: pnpm typecheck
+      - if: steps.checks.outputs.run == 'true'
+        run: pnpm test
+
+      - if: steps.checks.outputs.run == 'true'
+        uses: changesets/action/publish@v2
