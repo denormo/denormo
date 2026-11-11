@@ -54,6 +54,7 @@ The core depends only on the official `mongodb` driver; Mongoose knowledge lives
 | --- | --- | --- |
 | `@denormo/core` | Config types and validation, reverse map, update planner, change-stream runner, fan-out executor, state store, reconcile, read-repair helpers | `mongodb` |
 | `@denormo/mongoose` | `Snapshot` schema type, `snapshotSource` plugin, schema walker that emits core config, collection-name resolution | `@denormo/core`, `mongoose` (peer) |
+| `denormo` | Short name of `@denormo/mongoose`: re-exports it unchanged, so `npm i denormo` works | `@denormo/mongoose`, `mongoose` (peer) |
 | `@denormo/cli` | `sync start`, `reconcile`, `status`, `validate` commands | `@denormo/core` |
 | `@denormo/native` (later) | Config builder for native-driver users | `@denormo/core` |
 
@@ -277,7 +278,7 @@ Mongoose: opt-in `post('find')` / `post('findOne')` hooks. Native: `repair(docs,
 
 ```js
 import mongoose from 'mongoose';
-import { Snapshot, snapshotSource, createSync } from '@denormo/mongoose';
+import { Snapshot, snapshotSource, createSync } from '@denormo/mongoose'; // or from 'denormo'
 
 UserSchema.plugin(snapshotSource, { expose: ['name', 'avatar', 'role'] });
 const PostSchema = new mongoose.Schema({
@@ -303,6 +304,8 @@ await sync.start();
 await sync.stop();
 // Later phases add: workerId, batchSize, throttle, sync.on(...), reconcile(), status().
 ```
+
+`@denormo/mongoose` (and `denormo`) also re-export `DenormoConfigError` and `DenormoRuntimeError` from core, so apps can check errors with `instanceof` without depending on `@denormo/core`.
 
 ```js
 import { createSyncEngine } from '@denormo/core';
@@ -349,7 +352,8 @@ Pure logic (validation rules, planning for every event type) lands in Phase 0 be
 
 ## Decisions
 
-- **Name:** denormo, published under the `@denormo` scope.
+- **Name:** denormo, published under the `@denormo` scope. The unscoped `denormo` package is the short name of `@denormo/mongoose` (it stays the Mongoose package when other adapters arrive), released with the same version.
+- **Releases:** Changesets, with all packages on one version; GitHub Actions publishes with npm trusted publishing (see `docs/RELEASING.md`).
 - **Minimum MongoDB version:** 6.0. CI tests against 6.0, 7.0 and 8.0.
 - **Default deployment:** embedded mode; dedicated worker recommended as load grows.
 - **Nested snapshots:** supported in v1 through cascading, with cycle detection and a depth limit.
