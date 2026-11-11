@@ -1,7 +1,25 @@
 {
   "name": "@denormo/mongoose",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Mongoose adapter for denormo: compiles schemas into the denormo core config",
+  "keywords": [
+    "mongodb",
+    "mongoose",
+    "mongoose-plugin",
+    "denormalization",
+    "denormalize",
+    "snapshot",
+    "change-streams",
+    "sync",
+    "embedded-documents"
+  ],
+  "homepage": "https://github.com/denormo/denormo#readme",
+  "bugs": "https://github.com/denormo/denormo/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denormo/denormo.git",
+    "directory": "packages/mongoose"
+  },
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -16,6 +34,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "@denormo/source": "./src/index.ts",
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
@@ -26,6 +45,9 @@
       }
     },
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsup",

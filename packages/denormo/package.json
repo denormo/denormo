@@ -1,0 +1,64 @@
+{
+  "name": "denormo",
+  "version": "0.1.0",
+  "description": "Keep denormalized MongoDB snapshot fields in sync with their sources (Mongoose). Short name for @denormo/mongoose.",
+  "keywords": [
+    "mongodb",
+    "mongoose",
+    "denormalization",
+    "denormalize",
+    "snapshot",
+    "change-streams",
+    "sync",
+    "embedded-documents"
+  ],
+  "homepage": "https://github.com/denormo/denormo#readme",
+  "bugs": "https://github.com/denormo/denormo/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/denormo/denormo.git",
+    "directory": "packages/denormo"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "@denormo/source": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@denormo/mongoose": "workspace:*"
+  },
+  "peerDependencies": {
+    "mongoose": "^8 || ^9"
+  },
+  "devDependencies": {
+    "mongoose": "^9.11.0"
+  }
+}
