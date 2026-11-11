@@ -1,6 +1,6 @@
 {
   "name": "denormo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Keep denormalized MongoDB snapshot fields in sync with their sources (Mongoose). Short name for @denormo/mongoose.",
   "keywords": [
     "mongodb",

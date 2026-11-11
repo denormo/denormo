@@ -1,5 +1,13 @@
 # denormo
 
+## 0.1.1
+
+### Patch Changes
+
+- 2c7a9c6: First version published from CI with npm provenance, which links each package to the commit and workflow run that built it. No code changes since 0.1.0.
+- Updated dependencies [2c7a9c6]
+  - @denormo/mongoose@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes
